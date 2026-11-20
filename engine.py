@@ -27,6 +27,109 @@ VALID_TYPES = {
 SOURCE_TYPES = {"battery", "dc_source"}
 
 # COMPONENTS
+# GENERAL CIRCUIT MODEL
+
+@dataclasses.dataclass(frozen=True)
+class PartDefinition:
+    kind: str
+    terminals: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True)
+class CircuitModel:
+    components: dict[str, Component]
+    nets: dict[str, tuple[str, ...]]
+
+
+PARTS: dict[str, PartDefinition] = {
+    **{kind: PartDefinition(kind, ("p", "n") if kind in SOURCE_TYPES else ("a", "b"))
+       for kind in VALID_TYPES},
+    "ac_source": PartDefinition("ac_source", ("p", "n")),
+    "current_source": PartDefinition("current_source", ("p", "n")),
+    "npn": PartDefinition("npn", ("C", "B", "E")),
+    "pnp": PartDefinition("pnp", ("C", "B", "E")),
+    "nmos": PartDefinition("nmos", ("G", "D", "S")),
+    "pmos": PartDefinition("pmos", ("G", "D", "S")),
+    "opamp": PartDefinition("opamp", ("IN+", "IN-", "OUT", "V+", "V-")),
+}
+
+ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}\Z")
+PIN_PATTERN = re.compile(r"[A-Za-z0-9_+\\-]{1,24}\Z")
+
+
+def validate_model(raw: dict[str, Any]) -> CircuitModel:
+    """Validate a general connectivity model without requiring a drawable layout.
+
+    Components can use built-in definitions or an explicit pins list. Explicit
+    pins describe an instance's pin names, not a verified physical pinout.
+    """
+    if not isinstance(raw, dict) or set(raw) != {"components", "nets"}:
+        raise CircuitError("Netlist must contain exactly components and nets")
+    rows, net_rows = raw["components"], raw["nets"]
+    if not isinstance(rows, list) or not isinstance(net_rows, list):
+        raise CircuitError("components and nets must both be arrays")
+    if not 1 <= len(rows) <= 256 or not 1 <= len(net_rows) <= 512:
+        raise CircuitError("Expected 1–256 components and 1–512 nets")
+
+    definitions = {}
+    for row in rows:
+        if not isinstance(row, dict) or not {"id", "type", "value"} <= set(row) or set(row) - {"id", "type", "value", "pins"}:
+            raise CircuitError("Component requires id, type, value, and optional pins")
+        cid, kind, value = row["id"], row["type"], row["value"]
+        if not isinstance(cid, str) or not ID_PATTERN.fullmatch(cid):
+            raise CircuitError(f"Invalid component ID: {cid!r}")
+        if cid in definitions:
+            raise CircuitError(f"Duplicate component ID: {cid}")
+        if not isinstance(kind, str) or not ID_PATTERN.fullmatch(kind):
+            raise CircuitError(f"Invalid component type: {kind!r}")
+        if not isinstance(value, str) or len(value) > 100 or any(ord(c) < 32 for c in value):
+            raise CircuitError(f"Invalid component value: {cid}")
+        pins = row.get("pins")
+        if pins is None:
+            if kind not in PARTS:
+                raise CircuitError(f"Unknown component type {kind!r}; provide its pins explicitly")
+            pins = list(PARTS[kind].terminals)
+        if not isinstance(pins, list) or not 1 <= len(pins) <= 128:
+            raise CircuitError(f"Invalid pin list for {cid}")
+        if any(not isinstance(pin, str) or not PIN_PATTERN.fullmatch(pin) for pin in pins):
+            raise CircuitError(f"Invalid pin name for {cid}")
+        if len(pins) != len(set(pins)):
+            raise CircuitError(f"Duplicate pin name on {cid}")
+        definitions[cid] = (kind, value, tuple(pins))
+
+    nets = {}
+    pin_to_net = {}
+    for row in net_rows:
+        if not isinstance(row, dict) or set(row) != {"name", "pins"}:
+            raise CircuitError("Each net requires name and pins")
+        name, refs = row["name"], row["pins"]
+        if not isinstance(name, str) or not ID_PATTERN.fullmatch(name):
+            raise CircuitError(f"Invalid net name: {name!r}")
+        if name in nets:
+            raise CircuitError(f"Duplicate net: {name}")
+        if not isinstance(refs, list) or not refs:
+            raise CircuitError(f"Net {name} must contain at least one pin")
+        for ref in refs:
+            if not isinstance(ref, str) or ref.count(".") != 1:
+                raise CircuitError(f"Invalid terminal reference: {ref!r}")
+            cid, pin = ref.split(".")
+            if cid not in definitions:
+                raise CircuitError(f"Unknown component: {cid}")
+            if pin not in definitions[cid][2]:
+                raise CircuitError(f"Unknown terminal: {ref}")
+            if ref in pin_to_net:
+                raise CircuitError(f"Pin assigned more than once: {ref}")
+            pin_to_net[ref] = name
+        nets[name] = tuple(refs)
+
+    components = {}
+    for cid, (kind, value, pins) in definitions.items():
+        mapping = {pin: pin_to_net[f"{cid}.{pin}"]
+                   for pin in pins if f"{cid}.{pin}" in pin_to_net}
+        components[cid] = Component(cid, kind, value, mapping)
+    return CircuitModel(components, nets)
+
+
 
 class CircuitError(Exception):
     """Reject invalid/unrenderable circuits rather than inventing connections."""
@@ -585,6 +688,11 @@ def svg(circuit: Circuit, ink: Ink) -> str:
 # API
 
 def make_svg_from_netlist(raw: dict[str, Any]) -> str:
+    model = validate_model(raw)
+    if any(c.kind not in VALID_TYPES for c in model.components.values()):
+        raise CircuitError("Circuit model is valid, but SVG layout does not yet support these component types")
+    if any(len(c.pins) != 2 for c in model.components.values()):
+        raise CircuitError("Circuit model is valid, but SVG layout currently requires connected two-pin components")
     circuit = validate(raw)
     ink = layout(circuit)
     return svg(circuit, ink)
