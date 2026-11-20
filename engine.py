@@ -7,6 +7,8 @@ import re
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
+from symbols import BUILTIN_SYMBOLS, SymbolSpec, get_symbol
+
 # CONFIG
 
 MAX_COMPONENTS = 24
@@ -39,18 +41,12 @@ class PartDefinition:
 class CircuitModel:
     components: dict[str, Component]
     nets: dict[str, tuple[str, ...]]
+    symbols: dict[str, SymbolSpec] = dataclasses.field(default_factory=dict)
 
 
 PARTS: dict[str, PartDefinition] = {
-    **{kind: PartDefinition(kind, ("p", "n") if kind in SOURCE_TYPES else ("a", "b"))
-       for kind in VALID_TYPES},
-    "ac_source": PartDefinition("ac_source", ("p", "n")),
-    "current_source": PartDefinition("current_source", ("p", "n")),
-    "npn": PartDefinition("npn", ("C", "B", "E")),
-    "pnp": PartDefinition("pnp", ("C", "B", "E")),
-    "nmos": PartDefinition("nmos", ("G", "D", "S")),
-    "pmos": PartDefinition("pmos", ("G", "D", "S")),
-    "opamp": PartDefinition("opamp", ("IN+", "IN-", "OUT", "V+", "V-")),
+    kind: PartDefinition(kind, symbol.pin_names)
+    for kind, symbol in BUILTIN_SYMBOLS.items()
 }
 
 ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}\Z")
@@ -72,6 +68,7 @@ def validate_model(raw: dict[str, Any]) -> CircuitModel:
         raise CircuitError("Expected 1–256 components and 1–512 nets")
 
     definitions = {}
+    symbols: dict[str, SymbolSpec] = {}
     for row in rows:
         if not isinstance(row, dict) or not {"id", "type", "value"} <= set(row) or set(row) - {"id", "type", "value", "pins"}:
             raise CircuitError("Component requires id, type, value, and optional pins")
@@ -95,6 +92,10 @@ def validate_model(raw: dict[str, Any]) -> CircuitModel:
             raise CircuitError(f"Invalid pin name for {cid}")
         if len(pins) != len(set(pins)):
             raise CircuitError(f"Duplicate pin name on {cid}")
+        try:
+            symbols[cid] = get_symbol(kind, pins)
+        except ValueError as error:
+            raise CircuitError(f"Invalid symbol for {cid}: {error}") from error
         definitions[cid] = (kind, value, tuple(pins))
 
     nets = {}
@@ -127,7 +128,7 @@ def validate_model(raw: dict[str, Any]) -> CircuitModel:
         mapping = {pin: pin_to_net[f"{cid}.{pin}"]
                    for pin in pins if f"{cid}.{pin}" in pin_to_net}
         components[cid] = Component(cid, kind, value, mapping)
-    return CircuitModel(components, nets)
+    return CircuitModel(components, nets, symbols)
 
 
 
@@ -697,3 +698,4 @@ def make_svg_from_netlist(raw: dict[str, Any]) -> str:
     ink = layout(circuit)
     return svg(circuit, ink)
 
+ 
