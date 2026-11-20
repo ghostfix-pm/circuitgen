@@ -1,0 +1,16 @@
+{
+  "components": [
+    {"id": "U1", "type": "arduino_uno", "value": "Arduino Uno"},
+    {"id": "S1", "type": "sensor_xyz", "value": "Sensor", "pins": ["VCC", "GND", "SDA", "SCL"]},
+    {"id": "R1", "type": "resistor", "value": "330Ω"},
+    {"id": "D1", "type": "led", "value": "red"}
+  ],
+  "nets": [
+    {"name": "VCC", "pins": ["U1.5V", "S1.VCC"]},
+    {"name": "GND", "pins": ["U1.GND", "S1.GND", "D1.b"]},
+    {"name": "SDA", "pins": ["U1.A4", "S1.SDA"]},
+    {"name": "SCL", "pins": ["U1.A5", "S1.SCL"]},
+    {"name": "LED", "pins": ["U1.D9", "R1.a"]},
+    {"name": "LEDA", "pins": ["R1.b", "D1.a"]}
+  ]
+}

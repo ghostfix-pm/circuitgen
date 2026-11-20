@@ -1,0 +1,16 @@
+{
+  "components": [
+    {"id": "V1", "type": "battery", "value": "9V"},
+    {"id": "R1", "type": "resistor", "value": "1kΩ"},
+    {"id": "R2", "type": "resistor", "value": "2kΩ"},
+    {"id": "R3", "type": "resistor", "value": "3kΩ"},
+    {"id": "R4", "type": "resistor", "value": "4kΩ"},
+    {"id": "R5", "type": "resistor", "value": "5kΩ"}
+  ],
+  "nets": [
+    {"name": "TOP", "pins": ["V1.p", "R1.a", "R3.a"]},
+    {"name": "LEFT_MID", "pins": ["R1.b", "R2.a", "R5.a"]},
+    {"name": "RIGHT_MID", "pins": ["R3.b", "R4.a", "R5.b"]},
+    {"name": "BOTTOM", "pins": ["R2.b", "R4.b", "V1.n"]}
+  ]
+}

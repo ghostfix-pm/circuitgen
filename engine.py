@@ -698,4 +698,17 @@ def make_svg_from_netlist(raw: dict[str, Any]) -> str:
     ink = layout(circuit)
     return svg(circuit, ink)
 
- 
+
+
+# GENERAL PLACEMENT API
+
+def place_netlist(raw: dict[str, Any]):
+    """Return geometry for any structurally valid netlist; no wires are routed."""
+    from placement import place_model
+    return place_model(validate_model(raw))
+
+
+def make_placement_preview_svg_from_netlist(raw: dict[str, Any]) -> str:
+    """Render placement and dashed connectivity guides, NOT a wired schematic."""
+    from placement import make_placement_preview_svg
+    return make_placement_preview_svg(validate_model(raw))

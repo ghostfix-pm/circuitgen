@@ -354,3 +354,23 @@ def make_symbol_svg(kind: str, value: str = "", cid: str = "U1",
         out.append(f'<text class="pin" text-anchor="{anchor}" x="{cx+x:.1f}" y="{cy+baseline:.1f}">{xml_escape(label)}</text>')
     out.append('</svg>')
     return "\n".join(out) + "\n"
+
+
+# REUSABLE SVG BODY
+
+def symbol_body_svg(symbol: SymbolSpec, x_px: float, y_px: float,
+                    rotation: int = 0, mirror: bool = False) -> str:
+    """Draw the component body in a larger SVG; labels can be placed separately."""
+    _check_orientation(rotation, mirror)
+    if not math.isfinite(x_px) or not math.isfinite(y_px):
+        raise ValueError("Symbol position must be finite")
+    flip = " scale(-1 1)" if mirror else ""
+    return (f'<g transform="translate({x_px:.2f} {y_px:.2f}) rotate({rotation}){flip}">'
+            + "\n".join(_local_art(symbol)) + "</g>")
+
+
+def symbol_pin_labels(symbol: SymbolSpec, rotation: int = 0,
+                      mirror: bool = False) -> list[tuple[str, float, float, str, str, float, float]]:
+    """Return upright outward-facing labels, relative to symbol center (pixels)."""
+    _check_orientation(rotation, mirror)
+    return _pin_label_layout(symbol, rotation, mirror)
