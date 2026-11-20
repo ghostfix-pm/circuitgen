@@ -1,0 +1,16 @@
+{
+  "components": [
+    {"id": "VAC", "type": "ac_source", "value": "12VAC"},
+    {"id": "D1", "type": "diode", "value": "1N4007"},
+    {"id": "D2", "type": "diode", "value": "1N4007"},
+    {"id": "D3", "type": "diode", "value": "1N4007"},
+    {"id": "D4", "type": "diode", "value": "1N4007"},
+    {"id": "RL", "type": "resistor", "value": "1kΩ"}
+  ],
+  "nets": [
+    {"name": "AC1", "pins": ["VAC.p", "D1.a", "D3.b"]},
+    {"name": "AC2", "pins": ["VAC.n", "D2.a", "D4.b"]},
+    {"name": "DC_PLUS", "pins": ["D1.b", "D2.b", "RL.a"]},
+    {"name": "DC_MINUS", "pins": ["D3.a", "D4.a", "RL.b"]}
+  ]
+}

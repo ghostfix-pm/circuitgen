@@ -401,7 +401,11 @@ def route_model(model: CircuitModel, placement: Placement | None = None) -> Rout
 
 
 def make_routed_svg(model: CircuitModel) -> str:
-    """Render verified routes and symbols to an appropriately sized transparent SVG."""
+    """Use historical motif rendering only for exact matches; otherwise route normally."""
+    from motifs import render_motif
+    specialized = render_motif(model)
+    if specialized is not None:
+        return specialized
     result = route_model(model)
     placed = result.placement
     bounds = []
