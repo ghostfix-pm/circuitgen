@@ -124,13 +124,14 @@ class TestEngine(unittest.TestCase):
         with self.assertRaisesRegex(CircuitError, "Unknown terminal"):
             make_svg_from_netlist(raw)
 
-    def test_multiple_sources_rejected(self):
+    def test_multiple_sources_routed(self):
         raw = netlist(
             [("V1", "battery", "9V"), ("V2", "battery", "5V")],
             [["V1.p", "V2.p"], ["V1.n", "V2.n"]],
         )
-        with self.assertRaisesRegex(CircuitError, "exactly ONE"):
-            make_svg_from_netlist(raw)
+        artwork = make_svg_from_netlist(raw)
+        self.assertIn('SchemAI routed schematic', artwork)
+        self.assertEqual(artwork.count('data-component="'), 2)
 
     def test_duplicate_terminal(self):
         raw = netlist(
@@ -148,16 +149,16 @@ class TestEngine(unittest.TestCase):
             [["V1.p", "R1.a", "R3.a"], ["R1.b", "R2.a", "R5.a"],
              ["R3.b", "R4.a", "R5.b"], ["R2.b", "R4.b", "V1.n"]],
         )
-        with self.assertRaisesRegex(CircuitError, "Unsupported topology"):
-            make_svg_from_netlist(raw)
+        artwork = make_svg_from_netlist(raw)
+        self.assertIn('SchemAI routed schematic', artwork)
+        self.assertEqual(artwork.count('data-component="'), 6)
 
-    def test_dangling_terminal(self):
+    def test_dangling_terminal_is_visible_as_unconnected(self):
         raw = netlist(
             [("V1", "battery", "9V"), ("R1", "resistor", "1kΩ")],
             [["V1.p", "R1.a"], ["V1.n"]],
         )
-        with self.assertRaises(CircuitError):
-            make_svg_from_netlist(raw)
+        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
 
 
 if __name__ == "__main__":
@@ -170,8 +171,7 @@ class TestGeneralModel(unittest.TestCase):
                       [['V1.p','R1.a'],['V1.n','V2.n'],['V2.p','R1.b']])
         model = validate_model(raw)
         self.assertEqual(len(model.components), 3)
-        with self.assertRaisesRegex(CircuitError, 'layout does not yet support'):
-            make_svg_from_netlist(raw)
+        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
 
     def test_custom_multipin_component(self):
         from engine import validate_model
@@ -182,8 +182,7 @@ class TestGeneralModel(unittest.TestCase):
                        {'name':'SIGNAL','pins':['U1.OUT']}]}
         model = validate_model(raw)
         self.assertEqual(model.components['U1'].pins['OUT'], 'SIGNAL')
-        with self.assertRaisesRegex(CircuitError, 'layout does not yet support'):
-            make_svg_from_netlist(raw)
+        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
 
     def test_unknown_pin_rejected(self):
         from engine import validate_model

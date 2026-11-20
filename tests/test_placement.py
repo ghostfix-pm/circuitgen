@@ -16,17 +16,53 @@ def example(name):
 
 
 class TestPlacement(unittest.TestCase):
-    def test_wheatstone_is_placed_but_not_routed(self):
+    def test_wheatstone_placement_is_preserved_after_routing(self):
         raw = example("wheatstone.json")
         result = place_netlist(raw)
         self.assertEqual(set(result.symbols), {"V1", "R1", "R2", "R3", "R4", "R5"})
+        self.assertLess(result.symbols["V1"].x, result.symbols["R1"].x)
+        self.assertEqual(result.symbols["R1"].x, result.symbols["R2"].x)
+        self.assertEqual(result.symbols["R3"].x, result.symbols["R4"].x)
         self.assertLess(result.symbols["R1"].x, result.symbols["R5"].x)
-        self.assertLess(result.symbols["R5"].x, result.symbols["R2"].x)
-        self.assertEqual(result.symbols["R5"].rotation, 90)
-        self.assertLess(result.symbols["R1"].y, result.symbols["R3"].y)
-        self.assertLess(result.symbols["R2"].y, result.symbols["R4"].y)
-        with self.assertRaisesRegex(CircuitError, "Unsupported topology"):
-            make_svg_from_netlist(raw)
+        self.assertLess(result.symbols["R5"].x, result.symbols["R3"].x)
+        self.assertLess(result.symbols["R1"].y, result.symbols["R5"].y)
+        self.assertLess(result.symbols["R5"].y, result.symbols["R2"].y)
+        self.assertEqual(result.symbols["R5"].rotation, 0)
+        for cid in ("R1", "R2", "R3", "R4"):
+            self.assertEqual(result.symbols[cid].rotation, 90)
+        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+
+    def test_bridge_motif_does_not_depend_on_net_names(self):
+        raw = example('wheatstone.json')
+        for i, net in enumerate(raw['nets']):
+            net['name'] = ('PWR', 'DIVIDER_A', 'DIVIDER_B', 'RETURN')[i]
+        result = place_netlist(raw)
+        self.assertEqual(result.symbols['R1'].x, result.symbols['R2'].x)
+        self.assertEqual(result.symbols['R3'].x, result.symbols['R4'].x)
+
+    def test_bridge_pin_direction_is_independent_of_ab(self):
+        raw = example('wheatstone.json')
+        baseline = place_netlist(raw)
+        for cid in ('R1', 'R2', 'R3', 'R4', 'R5'):
+            changed = copy.deepcopy(raw)
+            for net in changed['nets']:
+                net['pins'] = [f'{cid}.b' if ref == f'{cid}.a' else
+                               f'{cid}.a' if ref == f'{cid}.b' else ref
+                               for ref in net['pins']]
+            result = place_netlist(changed)
+            self.assertEqual((result.symbols[cid].x, result.symbols[cid].y),
+                             (baseline.symbols[cid].x, baseline.symbols[cid].y))
+            self.assertEqual(set(result.symbols[cid].pin_positions), {'a', 'b'})
+            self.assertIn('SchemAI routed schematic', make_svg_from_netlist(changed))
+
+    def test_controller_led_follows_selected_digital_pin(self):
+        raw = example('controller.json')
+        for net in raw['nets']:
+            net['pins'] = ['U1.D8' if ref == 'U1.D9' else ref for ref in net['pins']]
+        placement = place_netlist(raw)
+        self.assertEqual(placement.symbols['R1'].y,
+                         placement.symbols['U1'].pin_positions['D8'][1])
+        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
 
     def test_wheatstone_preview_is_parseable(self):
         raw = example("wheatstone.json")

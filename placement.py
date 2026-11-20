@@ -36,6 +36,9 @@ class SymbolPlacement:
     pin_positions: dict[str, tuple[float, float]]
     title_y: float
     value_y: float
+    title_x: float = 0.0
+    value_x: float = 0.0
+    label_anchor: str = "middle"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -234,8 +237,156 @@ def _one_island(model: CircuitModel, group: tuple[str, ...],
     return layout, [tuple(items) for items in ordered]
 
 
+# RECOGNIZABLE CIRCUIT MOTIFS
+
+def _place_at(model: CircuitModel, cid: str, x: float, y: float,
+              rotation: int = 0, mirror: bool = False,
+              side_label: bool = False) -> SymbolPlacement:
+    symbol = model.symbols[cid]
+    comp = model.components[cid]
+    hw, hh, title_y, value_y = _geometry(symbol, comp, rotation, mirror)
+    title_x = value_x = 0.0
+    anchor = 'middle'
+    if side_label:
+        # Vertical two-terminal symbols need their text beside, not across, pin wires.
+        title_x = value_x = 2.3
+        title_y, value_y = -0.34, 0.74
+        anchor = 'start'
+        hw = max(hw, 2.3 + max(len(cid) * 10.5, len(comp.value) * 7.8) / GRID_PX + 1.0)
+        hh = max(hh, 2.8)
+    return SymbolPlacement(cid, x, y, rotation, mirror, hw, hh,
+                           pin_positions(symbol, x, y, rotation, mirror),
+                           title_y, value_y, title_x, value_x, anchor)
+
+
+def _bridge_motif(model: CircuitModel):
+    """Recognize a four-arm resistance bridge with a fifth midpoint connection.
+
+    Derive roles from net connectivity, never component IDs or net names.
+    Return (source, upper_left, lower_left, upper_right, lower_right, cross).
+    """
+    if len(model.components) != 6 or len(model.nets) != 4:
+        return None
+    sources = [c for c in model.components.values() if c.kind in SOURCE_KINDS]
+    if len(sources) != 1 or set(sources[0].pins) != {'p', 'n'}:
+        return None
+    src = sources[0]
+    positive, negative = src.pins['p'], src.pins['n']
+    if positive == negative:
+        return None
+    arms = [c for c in model.components.values() if c.cid != src.cid]
+    if len(arms) != 5 or any(c.kind not in {'resistor', 'inductor', 'capacitor'}
+                             or len(c.pins) != 2 for c in arms):
+        return None
+    mids = set(model.nets) - {positive, negative}
+    if len(mids) != 2:
+        return None
+    bridges = [c for c in arms if set(c.pins.values()) == mids]
+    if len(bridges) != 1:
+        return None
+    bridge = bridges[0]
+    branches = []
+    for mid in mids:
+        above = [c for c in arms if c.cid != bridge.cid and
+                 set(c.pins.values()) == {positive, mid}]
+        below = [c for c in arms if c.cid != bridge.cid and
+                 set(c.pins.values()) == {mid, negative}]
+        if len(above) != 1 or len(below) != 1:
+            return None
+        branches.append((above[0], below[0], mid))
+    if len({part.cid for top, bottom, _ in branches for part in (top, bottom)}) != 4:
+        return None
+    branches.sort(key=lambda b: (b[0].cid, b[1].cid))
+    return src.cid, branches[0][0].cid, branches[0][1].cid, \
+        branches[1][0].cid, branches[1][1].cid, bridge.cid
+
+
+def _bridge_placement(model: CircuitModel) -> Placement | None:
+    match = _bridge_motif(model)
+    if match is None:
+        return None
+    source, tl, bl, tr, br, cross = match
+    # A conventional bridge: two vertical voltage-divider arms with
+    # a horizontal midpoint bridge, and the supply to the left.
+    pos = model.components[source].pins['p']
+    left_mid = next(net for net in model.components[tl].pins.values() if net != pos)
+    right_mid = next(net for net in model.components[tr].pins.values() if net != pos)
+
+    def vertical(cid: str, upper_net: str) -> int:
+        # Keep the upper terminal above the lower one even when a/b is reversed.
+        return 90 if model.components[cid].pins['a'] == upper_net else 270
+
+    cross_mirror = model.components[cross].pins['a'] != left_mid
+    coordinates = {
+        source: (-9.0, 0.0, 0, False, False),
+        tl: (13.0, -13.0, vertical(tl, pos), False, True),
+        bl: (13.0, 13.0, vertical(bl, left_mid), False, True),
+        tr: (44.0, -13.0, vertical(tr, pos), False, True),
+        br: (44.0, 13.0, vertical(br, right_mid), False, True),
+        cross: (28.5, 0.0, 0, cross_mirror, False),
+    }
+    layout = {cid: _place_at(model, cid, *args)
+              for cid, args in coordinates.items()}
+    return Placement(layout, ((source,), (tl, bl), (cross,), (tr, br)),
+                     (tuple(sorted(model.components)),))
+
+
+def _controller_placement(model: CircuitModel) -> Placement | None:
+    """Compact grouping for a single Arduino with one sensor and LED branch."""
+    controls = [c for c in model.components.values() if c.kind == 'arduino_uno']
+    sensors = [c for c in model.components.values() if c.kind not in SOURCE_KINDS
+               and c.kind not in {'arduino_uno', 'resistor', 'led'}]
+    resistors = [c for c in model.components.values() if c.kind == 'resistor']
+    leds = [c for c in model.components.values() if c.kind == 'led']
+    if (len(model.components) != 4 or len(controls) != 1 or len(sensors) != 1
+            or len(resistors) != 1 or len(leds) != 1):
+        return None
+    ctrl, sensor, resistor, led = (controls[0].cid, sensors[0].cid,
+                                   resistors[0].cid, leds[0].cid)
+    nets = {net: set(pins) for net, pins in model.nets.items()}
+    digital_pins = [pin for pin in model.components[ctrl].pins
+                    if pin.startswith('D') and pin[1:].isdigit()]
+    chain = None
+    for drive in digital_pins:
+        for r_pin in ('a', 'b'):
+            if not any({f'{ctrl}.{drive}', f'{resistor}.{r_pin}'} <= pins
+                       for pins in nets.values()):
+                continue
+            remaining_r = 'b' if r_pin == 'a' else 'a'
+            for l_pin in ('a', 'b'):
+                if any({f'{resistor}.{remaining_r}', f'{led}.{l_pin}'} <= pins
+                       for pins in nets.values()):
+                    chain = (drive, r_pin, l_pin)
+                    break
+            if chain:
+                break
+        if chain:
+            break
+    if not chain:
+        return None
+    drive, r_pin, l_pin = chain
+    placed_ctrl = _place_at(model, ctrl, 0.0, 0.0)
+    # The LED circuit belongs beside the selected Arduino digital pin,
+    # regardless of which D-number drives it.
+    drive_y = placed_ctrl.pin_positions[drive][1]
+    layout = {
+        ctrl: placed_ctrl,
+        sensor: _place_at(model, sensor, 18.0, -4.0, 0, True),
+        resistor: _place_at(model, resistor, -15.0, drive_y, 0, r_pin == 'a'),
+        led: _place_at(model, led, -26.0, drive_y, 0, l_pin == 'a'),
+    }
+    return Placement(layout, ((led, resistor), (ctrl,), (sensor,)),
+                     (tuple(sorted(model.components)),))
+
+
 def place_model(model: CircuitModel) -> Placement:
     """Place every component deterministically; returns pin endpoints for routing."""
+    specialized = _bridge_placement(model)
+    if specialized is not None:
+        return specialized
+    specialized = _controller_placement(model)
+    if specialized is not None:
+        return specialized
     graph = _component_graph(model)
     groups = _islands(graph)
     items = {}
@@ -324,9 +475,9 @@ def make_placement_preview_svg(model: CircuitModel) -> str:
         cx, cy = pt((item.x, item.y))
         out.append(f'<g data-component="{_xml(cid)}" data-type="{_xml(comp.kind)}">')
         out.append(symbol_body_svg(symbol, cx, cy, item.rotation, item.mirror))
-        out.append(f'<text class="name" x="{cx:.2f}" y="{cy + item.title_y*GRID_PX:.2f}">{_xml(cid)}</text>')
+        out.append(f'<text class="name" x="{cx+item.title_x*GRID_PX:.2f}" y="{cy + item.title_y*GRID_PX:.2f}" text-anchor="{item.label_anchor}">{_xml(cid)}</text>')
         if comp.value:
-            out.append(f'<text class="value" x="{cx:.2f}" y="{cy + item.value_y*GRID_PX:.2f}">{_xml(comp.value)}</text>')
+            out.append(f'<text class="value" x="{cx+item.value_x*GRID_PX:.2f}" y="{cy + item.value_y*GRID_PX:.2f}" text-anchor="{item.label_anchor}">{_xml(comp.value)}</text>')
         for pin, (x, y) in item.pin_positions.items():
             px, py = pt((x, y))
             out.append(f'<circle class="endpoint" data-pin="{_xml(pin)}" cx="{px:.2f}" cy="{py:.2f}" r="3"/>')

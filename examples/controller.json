@@ -1,7 +1,7 @@
 {
   "components": [
     {"id": "U1", "type": "arduino_uno", "value": "Arduino Uno"},
-    {"id": "S1", "type": "sensor_xyz", "value": "Sensor", "pins": ["VCC", "GND", "SDA", "SCL"]},
+    {"id": "S1", "type": "sensor_xyz", "value": "Generic I2C sensor", "pins": ["VCC", "GND", "SDA", "SCL"]},
     {"id": "R1", "type": "resistor", "value": "330Ω"},
     {"id": "D1", "type": "led", "value": "red"}
   ],
