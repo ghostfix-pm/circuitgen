@@ -1,3 +1,4 @@
+import copy
 import unittest
 
 from engine import CircuitError, make_svg_from_netlist
@@ -71,6 +72,65 @@ class TestEngine(unittest.TestCase):
              ["R4.b", "R5.a", "R6.a", "C1.a"],
              ["R5.b", "R6.b", "C1.b", "V1.n"]],
         )
+
+    def test_deterministic_output(self):
+        raw = netlist(
+            [("V1", "battery", "9V"), ("R1", "resistor", "330Ω"),
+             ("D1", "led", "red")],
+            [["V1.p", "R1.a"], ["R1.b", "D1.a"], ["D1.b", "V1.n"]],
+        )
+        self.assertEqual(make_svg_from_netlist(raw), make_svg_from_netlist(copy.deepcopy(raw)))
+
+    def test_transparent_svg_without_footer(self):
+        raw = netlist(
+            [("V1", "battery", "9V"), ("R1", "resistor", "330Ω")],
+            [["V1.p", "R1.a"], ["R1.b", "V1.n"]],
+        )
+        artwork = make_svg_from_netlist(raw)
+        self.assertNotIn('class="bg"', artwork)
+        self.assertNotIn('class="foot"', artwork)
+
+    def test_malformed_netlists_raise_circuit_error(self):
+        good = netlist(
+            [("V1", "battery", "9V"), ("R1", "resistor", "330Ω")],
+            [["V1.p", "R1.a"], ["R1.b", "V1.n"]],
+        )
+        cases = [None, [], "invalid", 42]
+        for kind in [None, [], 123, {}]:
+            bad = copy.deepcopy(good)
+            bad["components"][1]["type"] = kind
+            cases.append(bad)
+        for pins in [["V1.p", None], ["V1.p", []], ["V1.p", {}]]:
+            bad = copy.deepcopy(good)
+            bad["nets"][0]["pins"] = pins
+            cases.append(bad)
+        for bad in cases:
+            with self.subTest(bad=bad), self.assertRaises(CircuitError):
+                make_svg_from_netlist(bad)
+
+    def test_missing_component_pin(self):
+        raw = netlist(
+            [("V1", "battery", "9V"), ("R1", "resistor", "330Ω")],
+            [["V1.p", "R1.a"], ["V1.n", "R1.a"]],
+        )
+        with self.assertRaises(CircuitError):
+            make_svg_from_netlist(raw)
+
+    def test_invalid_pin_name(self):
+        raw = netlist(
+            [("V1", "battery", "9V"), ("R1", "resistor", "330Ω")],
+            [["V1.p", "R1.x"], ["R1.b", "V1.n"]],
+        )
+        with self.assertRaisesRegex(CircuitError, "Unknown terminal"):
+            make_svg_from_netlist(raw)
+
+    def test_multiple_sources_rejected(self):
+        raw = netlist(
+            [("V1", "battery", "9V"), ("V2", "battery", "5V")],
+            [["V1.p", "V2.p"], ["V1.n", "V2.n"]],
+        )
+        with self.assertRaisesRegex(CircuitError, "exactly ONE"):
+            make_svg_from_netlist(raw)
 
     def test_duplicate_terminal(self):
         raw = netlist(

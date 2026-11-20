@@ -98,6 +98,8 @@ class Ink:
 
 
 def validate(raw: dict[str, Any]) -> Circuit:
+    if not isinstance(raw, dict):
+        raise CircuitError("Netlist must be a JSON object")
     if set(raw) != {"components", "nets"}:
         raise CircuitError("Netlist must contain exactly components and nets")
     rows, net_rows = raw["components"], raw["nets"]
@@ -117,7 +119,7 @@ def validate(raw: dict[str, Any]) -> Circuit:
             raise CircuitError(f"Invalid component ID: {cid!r}")
         if cid in definitions:
             raise CircuitError(f"Duplicate component ID: {cid}")
-        if kind not in VALID_TYPES:
+        if not isinstance(kind, str) or kind not in VALID_TYPES:
             raise CircuitError(f"Unsupported component type {kind!r} ({cid})")
         if not isinstance(value, str) or len(value) > 28 or any(ord(c) < 32 for c in value):
             raise CircuitError(f"Invalid/overlong value for {cid}")
@@ -139,6 +141,8 @@ def validate(raw: dict[str, Any]) -> Circuit:
             raise CircuitError(f"Duplicate net: {name}")
         if not isinstance(pins, list) or len(pins) < 2:
             raise CircuitError(f"Net {name} is dangling (fewer than 2 pins)")
+        if any(not isinstance(pin, str) for pin in pins):
+            raise CircuitError(f"Net {name} contains a non-string terminal reference")
         if len(pins) != len(set(pins)):
             raise CircuitError(f"Net {name} contains a repeated terminal")
         for pin in pins:
