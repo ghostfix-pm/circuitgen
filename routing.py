@@ -410,12 +410,13 @@ def route_model(model: CircuitModel, placement: Placement | None = None,
     return result
 
 
-def make_routed_svg(model: CircuitModel, *, optimize: bool = False) -> str:
+def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str = "#000000") -> str:
     """Use historical motif rendering only for exact matches; otherwise route normally."""
     from motifs import render_motif
+    from colors import apply_ink_color
     specialized = render_motif(model)
     if specialized is not None:
-        return specialized
+        return apply_ink_color(specialized, color)
     result = route_model(model, optimize=optimize)
     placed = result.placement
     bounds = []
@@ -509,7 +510,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False) -> str:
                     out.append(f'<text class="pin" text-anchor="{anchor}" x="{cx+lx:.2f}" y="{cy+baseline:.2f}">{xml(label)}</text>')
         out.append('</g>')
     out.append('</svg>')
-    return '\n'.join(out)+'\n'
+    return apply_ink_color('\n'.join(out)+'\n', color)
 
 
 if __name__ == '__main__':
@@ -519,10 +520,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Render a verified routed SVG schematic')
     parser.add_argument('netlist', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--color', default='#000000', help='Ink color, e.g. #000000 or #cc0000')
     parser.add_argument('--optimize', action='store_true', help='Try verified compact placement candidates')
     args = parser.parse_args()
     data = json.loads(args.netlist.read_text(encoding='utf-8'))
-    artwork = make_routed_svg(validate_model(data), optimize=args.optimize)
+    artwork = make_routed_svg(validate_model(data), optimize=args.optimize, color=args.color)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(artwork, encoding='utf-8')
     print(f'Saved routed schematic: {args.output}')

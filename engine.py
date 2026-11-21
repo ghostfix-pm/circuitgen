@@ -688,7 +688,8 @@ def svg(circuit: Circuit, ink: Ink) -> str:
 
 # API
 
-def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False) -> str:
+def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False, color: str = "#000000") -> str:
+    from colors import apply_ink_color
     model = validate_model(raw)
     if (all(c.kind in VALID_TYPES for c in model.components.values()) and
             all(len(c.pins) == 2 for c in model.components.values()) and
@@ -696,11 +697,11 @@ def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False) -> str
         try:
             circuit = validate(raw)
             ink = layout(circuit)
-            return svg(circuit, ink)
+            return apply_ink_color(svg(circuit, ink), color)
         except CircuitError as error:
             if "Unsupported topology" not in str(error):
                 raise
-    return make_routed_svg_from_netlist(raw, optimize=optimize)
+    return make_routed_svg_from_netlist(raw, optimize=optimize, color=color)
 
 
 def route_netlist(raw: dict[str, Any], *, optimize: bool = False):
@@ -709,10 +710,10 @@ def route_netlist(raw: dict[str, Any], *, optimize: bool = False):
     return route_model(validate_model(raw), optimize=optimize)
 
 
-def make_routed_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False) -> str:
+def make_routed_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False, color: str = "#000000") -> str:
     """Route a general circuit and render a transparent SVG."""
     from routing import make_routed_svg
-    return make_routed_svg(validate_model(raw), optimize=optimize)
+    return make_routed_svg(validate_model(raw), optimize=optimize, color=color)
 
 
 
