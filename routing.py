@@ -358,7 +358,7 @@ class _MeshRouter:
                     raise RoutingError(f'Wires from {net} and {other} intersect')
 
 
-def route_model(model: CircuitModel, placement: Placement | None = None) -> RoutedCircuit:
+def _route_model_base(model: CircuitModel, placement: Placement | None = None) -> RoutedCircuit:
     """Route every net, or raise rather than drawing a misleading partial circuit."""
     if placement is None:
         placement = place_model(model)
@@ -400,13 +400,23 @@ def route_model(model: CircuitModel, placement: Placement | None = None) -> Rout
     raise RoutingError(f'General routing failed without crossing unrelated nets: {last_error}')
 
 
-def make_routed_svg(model: CircuitModel) -> str:
+def route_model(model: CircuitModel, placement: Placement | None = None,
+                *, optimize: bool = False) -> RoutedCircuit:
+    """Route a netlist. Optional improvement never accepts an unverified layout."""
+    result = _route_model_base(model, placement)
+    if optimize:
+        from optimization import choose_better_layout
+        return choose_better_layout(model, result, _route_model_base)
+    return result
+
+
+def make_routed_svg(model: CircuitModel, *, optimize: bool = False) -> str:
     """Use historical motif rendering only for exact matches; otherwise route normally."""
     from motifs import render_motif
     specialized = render_motif(model)
     if specialized is not None:
         return specialized
-    result = route_model(model)
+    result = route_model(model, optimize=optimize)
     placed = result.placement
     bounds = []
     for item in placed.symbols.values():
@@ -509,9 +519,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Render a verified routed SVG schematic')
     parser.add_argument('netlist', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--optimize', action='store_true', help='Try verified compact placement candidates')
     args = parser.parse_args()
     data = json.loads(args.netlist.read_text(encoding='utf-8'))
-    artwork = make_routed_svg(validate_model(data))
+    artwork = make_routed_svg(validate_model(data), optimize=args.optimize)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(artwork, encoding='utf-8')
     print(f'Saved routed schematic: {args.output}')

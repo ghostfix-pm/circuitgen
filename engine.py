@@ -688,7 +688,7 @@ def svg(circuit: Circuit, ink: Ink) -> str:
 
 # API
 
-def make_svg_from_netlist(raw: dict[str, Any]) -> str:
+def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False) -> str:
     model = validate_model(raw)
     if (all(c.kind in VALID_TYPES for c in model.components.values()) and
             all(len(c.pins) == 2 for c in model.components.values()) and
@@ -700,19 +700,19 @@ def make_svg_from_netlist(raw: dict[str, Any]) -> str:
         except CircuitError as error:
             if "Unsupported topology" not in str(error):
                 raise
-    return make_routed_svg_from_netlist(raw)
+    return make_routed_svg_from_netlist(raw, optimize=optimize)
 
 
-def route_netlist(raw: dict[str, Any]):
+def route_netlist(raw: dict[str, Any], *, optimize: bool = False):
     """Return verified orthogonal wire paths for a general circuit."""
     from routing import route_model
-    return route_model(validate_model(raw))
+    return route_model(validate_model(raw), optimize=optimize)
 
 
-def make_routed_svg_from_netlist(raw: dict[str, Any]) -> str:
+def make_routed_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False) -> str:
     """Route a general circuit and render a transparent SVG."""
     from routing import make_routed_svg
-    return make_routed_svg(validate_model(raw))
+    return make_routed_svg(validate_model(raw), optimize=optimize)
 
 
 

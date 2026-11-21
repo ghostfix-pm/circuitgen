@@ -1,0 +1,12 @@
+{
+  "components": [
+    {"id": "V1", "type": "battery", "value": "9V"},
+    {"id": "V2", "type": "dc_source", "value": "3V"},
+    {"id": "R1", "type": "resistor", "value": "1kΩ"}
+  ],
+  "nets": [
+    {"name": "A", "pins": ["V1.p", "R1.a"]},
+    {"name": "B", "pins": ["R1.b", "V2.p"]},
+    {"name": "C", "pins": ["V2.n", "V1.n"]}
+  ]
+}
