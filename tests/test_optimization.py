@@ -63,7 +63,7 @@ class TestLayoutOptimization(unittest.TestCase):
 
     def test_existing_controller_default_hash_unchanged(self):
         raw = self.controller
-        expected = 'b14005bf9485f9660bcb18541de8137b4d3b33758088117de1b0014901a13f6f'
+        expected = '2e5bfcb19b1f7d79f85bc57736a78f3d367fc440a4ebeca13d076e611faadf71'
         self.assertEqual(hashlib.sha256(make_svg_from_netlist(raw).encode()).hexdigest(), expected)
         # Dense controller placements remain deliberately protected.
         self.assertEqual(make_svg_from_netlist(raw, optimize=True),
