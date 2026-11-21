@@ -1,0 +1,14 @@
+{
+  "components": [
+    {"id": "V1", "type": "battery", "value": "9V"},
+    {"id": "V2", "type": "dc_source", "value": "5V"},
+    {"id": "R1", "type": "resistor", "value": "330Ω"},
+    {"id": "U1", "type": "opamp", "value": "LM358"},
+    {"id": "U2", "type": "opamp", "value": "LM358"}
+  ],
+  "nets": [
+    {"name": "POWER", "pins": ["V1.p", "V2.p", "R1.a", "R1.b", "U1.OUT", "U2.OUT"]},
+    {"name": "RETURN", "pins": ["V1.n", "V2.n"]},
+    {"name": "UNUSED", "pins": ["U1.IN+"]}
+  ]
+}

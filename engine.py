@@ -729,3 +729,24 @@ def make_placement_preview_svg_from_netlist(raw: dict[str, Any]) -> str:
     """Render placement and dashed connectivity guides, NOT a wired schematic."""
     from placement import make_placement_preview_svg
     return make_placement_preview_svg(validate_model(raw))
+
+
+# ELECTRICAL RULE CHECKING
+
+def check_electrical_rules(raw: dict[str, Any]):
+    """Return errors, warnings and information without changing SVG output."""
+    from erc import check_electrical_rules as check
+    return check(raw)
+
+
+def make_checked_svg_from_netlist(raw: dict[str, Any], *, strict: bool = False,
+                                  optimize: bool = False, color: str = "#000000"):
+    """Render a checked netlist, returning (svg, ERCReport).
+
+    Definite ERC errors block rendering. Strict mode also blocks warnings.
+    Ordinary make_svg_from_netlist remains backwards compatible.
+    """
+    report = check_electrical_rules(raw)
+    if report.errors or (strict and report.warnings):
+        raise CircuitError(report.format_text())
+    return make_svg_from_netlist(raw, optimize=optimize, color=color), report
