@@ -1,0 +1,43 @@
+# BUILD SYSTEM
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+# PROJECT CONFIGURATION
+
+[project]
+name = "circuitgen"
+version = "0.1.0"
+description = "A Python library and CLI for generating circuit schematics from text descriptions or netlists."
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Ishaan"}
+]
+keywords = [
+    "circuit",
+    "schematic",
+    "electronics",
+    "circuit-diagram",
+    "netlist",
+    "svg",
+    "circuit-generator",
+    "python-library",
+    "cli",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/git-ishaan-kumar/circuitgen"
+
+# PACKAGE DISCOVERY
+
+[tool.setuptools.packages.find]
+where = ["src"]
