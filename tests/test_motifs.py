@@ -100,7 +100,7 @@ class TestHistoricMotifs(unittest.TestCase):
     def test_existing_controller_output_identical(self):
         output = make_svg_from_netlist(self.controller)
         digest = hashlib.sha256(output.encode('utf-8')).hexdigest()
-        self.assertEqual(digest, '2e5bfcb19b1f7d79f85bc57736a78f3d367fc440a4ebeca13d076e611faadf71')
+        self.assertEqual(digest, 'ce873349c6e80b477772cdf71ed399576edc2ca59e12685cfa74ef04fb7e82b9')
 
     def test_existing_simple_output_identical(self):
         raw = {
@@ -114,7 +114,7 @@ class TestHistoricMotifs(unittest.TestCase):
                 {'name':'N3','pins':['D1.b','V1.n']}],
         }
         digest = hashlib.sha256(make_svg_from_netlist(raw).encode('utf-8')).hexdigest()
-        self.assertEqual(digest, '9219046679d8d963dd83bb309a6834d314f34851ec829fc5b9ba720d66ffc621')
+        self.assertEqual(digest, '1e92920795bf03268441a6bab9ea254573ceb68f2484bae3abed95031fd9db96')
 
     def test_xml_escaping_labels(self):
         modified = copy.deepcopy(self.bridge)

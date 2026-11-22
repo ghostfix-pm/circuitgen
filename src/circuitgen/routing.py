@@ -700,7 +700,11 @@ def route_model(model: CircuitModel, placement: Placement | None = None,
     The source netlist stays unchanged. Routing failures are not suppressed.
     """
     if placement is not None:
-        return _route_model_base(model, placement)
+        result = _route_model_base(model, placement)
+        if optimize:
+            from .optimization import choose_better_layout
+            return choose_better_layout(model, result, _route_model_base)
+        return result
 
     from .optimization import assess_layout
     original = place_model(model)
@@ -746,6 +750,9 @@ def route_model(model: CircuitModel, placement: Placement | None = None,
                 except RoutingError as error:
                     last_error = error
         raise RoutingError(f'No verified layout after routing and spacing retries: {last_error}')
+    if optimize:
+        from .optimization import choose_better_layout
+        return choose_better_layout(model, best, _route_model_base)
     return best
 
 

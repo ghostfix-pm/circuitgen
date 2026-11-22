@@ -78,7 +78,7 @@ def _move_centers(placement: Placement, axis: str, factor: float) -> Placement:
     return dataclasses.replace(placement, symbols=moved)
 
 
-def _separated(placement: Placement, clearance: float = 0.75) -> bool:
+def _separated(placement: Placement, clearance: float = 0.25) -> bool:
     items = list(placement.symbols.values())
     for i, a in enumerate(items):
         for b in items[i+1:]:

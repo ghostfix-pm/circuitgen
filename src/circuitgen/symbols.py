@@ -76,9 +76,8 @@ BUILTIN_SYMBOLS: dict[str, SymbolSpec] = {
         PinSpec("V+", 0, -2), PinSpec("V-", 0, 2)
     ), 1.5, 1.6),
     "ne555": _ic("ne555", (
-        ("RESET", "4"), ("DISCH", "7"), ("THRES", "6"),
-        ("TRIG", "2"), ("CTRL", "5"),
-    ), (("OUT", "3"),), (("VCC", "8"),), (("GND", "1"),)),
+        ("TRIG", "2"), ("RESET", "4"), ("CTRL", "5"), ("THRES", "6"),
+    ), (("OUT", "3"), ("DISCH", "7")), (("VCC", "8"),), (("GND", "1"),)),
     "arduino_uno": _ic("arduino_uno",
         tuple((f"D{i}", "") for i in range(14)),
         tuple((f"A{i}", "") for i in range(6)) +
