@@ -678,19 +678,10 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
            '.wire{fill:none;stroke:#264a6f;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}',
            '.junction{fill:#264a6f}',
            '.netlabel{fill:#176b75;font-family:Arial,sans-serif;font-size:12px;font-weight:700}',
-           '.netlabel-halo{fill:none;stroke:#ffffff;stroke-width:4px;stroke-linejoin:round;font-family:Arial,sans-serif;font-size:12px;font-weight:700}',
            ']]></style>']
-    for net in sorted(result.paths):
-        for path in result.paths[net]:
-            if len(path) < 2:
-                continue
-            coords = [loc(p) for p in path]
-            d = 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in coords)
-            out.append(f'<path class="wire" data-net="{xml(net)}" d="{d}"/>')
-    for net in sorted(result.junctions):
-        for p in result.junctions[net]:
-            x, y = loc(p)
-            out.append(f'<circle class="junction" data-net="{xml(net)}" cx="{x:.2f}" cy="{y:.2f}" r="4.2"/>')
+    # Mask wire ink, not the SVG background. Black glyphs in the mask make
+    # genuinely transparent gaps beneath net labels on any background.
+    label_drawings = []
     for label in result.labels:
         x, y = loc(label.endpoint)
         if label.side == 'left':
@@ -703,8 +694,32 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
             y += 18; anchor = 'middle'
         markup = (f'data-net="{xml(label.net)}" data-pin="{xml(label.ref)}" '
                   f'text-anchor="{anchor}" x="{x:.2f}" y="{y:.2f}"')
-        out.append(f'<text class="netlabel-halo" {markup}>{xml(label.net)}</text>')
-        out.append(f'<text class="netlabel" {markup}>{xml(label.net)}</text>')
+        label_drawings.append((markup, xml(label.net)))
+    if label_drawings:
+        out.append('<defs><mask id="schemai-label-cutout" maskUnits="userSpaceOnUse" '
+                   f'x="0" y="0" width="{x1-x0:.1f}" height="{y1-y0:.1f}">')
+        out.append(f'<rect x="0" y="0" width="{x1-x0:.1f}" height="{y1-y0:.1f}" fill="white"/>')
+        for markup, value in label_drawings:
+            out.append(f'<text class="netlabel" {markup} fill="black" stroke="black" '
+                       f'stroke-width="5" stroke-linejoin="round" '
+                       f'style="fill:black;stroke:black">{value}</text>')
+        out.append('</mask></defs>')
+        out.append('<g mask="url(#schemai-label-cutout)">')
+    for net in sorted(result.paths):
+        for path in result.paths[net]:
+            if len(path) < 2:
+                continue
+            coords = [loc(p) for p in path]
+            d = 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in coords)
+            out.append(f'<path class="wire" data-net="{xml(net)}" d="{d}"/>')
+    for net in sorted(result.junctions):
+        for p in result.junctions[net]:
+            x, y = loc(p)
+            out.append(f'<circle class="junction" data-net="{xml(net)}" cx="{x:.2f}" cy="{y:.2f}" r="4.2"/>')
+    if label_drawings:
+        out.append('</g>')
+    for markup, value in label_drawings:
+        out.append(f'<text class="netlabel" {markup}>{value}</text>')
     for cid in sorted(placed.symbols):
         item = placed.symbols[cid]
         comp = model.components[cid]
