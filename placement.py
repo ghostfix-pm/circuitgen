@@ -543,7 +543,7 @@ def _ic_neighborhood_placement(model: CircuitModel) -> Placement | None:
 
     # Sources are traditionally left of the circuitry, outside passive parts.
     for index, cid in enumerate(sorted(sources)):
-        x = -side_width['left'] - 12 - _place_at(model, cid, 0, 0, side_label=True).half_width
+        x = -side_width['left'] - 5.5 - _place_at(model, cid, 0, 0, side_label=True).half_width
         y = (index - (len(sources)-1)/2)*14
         items[cid] = _place_at(model, cid, x, y, side_label=True)
 
@@ -556,14 +556,218 @@ def _ic_neighborhood_placement(model: CircuitModel) -> Placement | None:
                 return None
     return Placement(items, (tuple(sorted(items)),), (tuple(sorted(items)),))
 
-def place_model(model: CircuitModel) -> Placement:
-    """Place every component deterministically; returns pin endpoints for routing."""
+
+# --- Pin-aware functional grouping for circuits with multiple ICs/modules ---
+# This deliberately uses connectivity and symbol pin geometry, not IC model names.
+# A large host board/chip is the anchor; smaller modules sit beside the actual
+# connected pins; resistor/LED/passive chains stay together on the same side.
+
+def _supply_net_names(model: CircuitModel) -> frozenset[str]:
+    names = {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN', 'VBAT',
+             'AGND', 'DGND', 'PWR', 'GROUND'}
+    result = set()
+    for name, refs in model.nets.items():
+        up = name.upper()
+        if (up in names or up.startswith(('GND_', 'VCC_', 'VDD_', 'VSS_'))
+                or up.endswith(('_GND', '_VCC', '_RAIL'))):
+            result.add(name)
+            continue
+        for ref in refs:
+            cid, pin = ref.split('.', 1)
+            if (model.components[cid].kind in SOURCE_KINDS
+                    and pin in {'p', 'n'}) or pin.upper() in names:
+                result.add(name)
+                break
+    return frozenset(result)
+
+
+def _functional_multiblock_placement(model: CircuitModel) -> Placement | None:
+    """Arrange host, peripherals and local signal chains by *actual pin rows*.
+
+    This is geometry-only. It never edits net identities or physical pin
+    names, and the caller must route + verify any candidate before rendering.
+    When connectivity is too ambiguous or dense, fall back to general layout.
+    """
+    if not 4 <= len(model.components) <= 18:
+        return None
+    multi = [cid for cid, symbol in model.symbols.items()
+             if len(symbol.pins) >= 3 and model.components[cid].kind not in SOURCE_KINDS]
+    if len(multi) < 2:
+        return None
+    supply = _supply_net_names(model)
+    # The largest-pin device is usually a board/controller, regardless of its
+    # name. Favor actual signal degree as a secondary signal.
+    def rank(cid):
+        p = model.components[cid]
+        return (len(model.symbols[cid].pins),
+                sum(net not in supply for net in p.pins.values()), cid)
+    root = max(multi, key=rank)
+    active = model.components[root].pins
+    root_nets = collections.defaultdict(list)
+    for pin, net in active.items():
+        if net not in supply:
+            root_nets[net].append(pin)
+    if not root_nets:
+        return None
+    # Avoid metadata on the same side as all output leads unless the symbol
+    # actually has top/bottom pins to protect (e.g. a 555 timer).
+    rootsym = model.symbols[root]
+    tall_pin = any(abs(pin.y) > rootsym.half_height+0.05
+                   for pin in rootsym.pins if pin.name in active)
+    host = _place_at(model, root, 0.0, 0.0, side_label=tall_pin)
+    layout = {root: host}
+
+    def overlaps(a, b, gap=1.35):
+        return (abs(a.x-b.x) < a.half_width+b.half_width+gap and
+                abs(a.y-b.y) < a.half_height+b.half_height+gap)
+
+    def clear(item, gap=1.35):
+        return all(not overlaps(item, other, gap) for other in layout.values())
+
+    # Place every smaller multi-pin module alongside the host pins it actually
+    # uses; search mirrors / 180° orientations to face connected leads inward.
+    # Prevent unrelated power rails from driving the placement.
+    pending_modules = set(multi)-{root}
+    if len(pending_modules) > 5:
+        return None
+    for cid in sorted(pending_modules,
+                      key=lambda c: (-sum(net in root_nets for net in
+                                           model.components[c].pins.values()), c)):
+        links = [(hostpin, pin) for pin, net in model.components[cid].pins.items()
+                 if net in root_nets for hostpin in root_nets[net]]
+        if not links:
+            # Can't associate an independently attached module with this host.
+            return None
+        xs = [host.pin_positions[p][0]-host.x for p, _ in links]
+        ys = [host.pin_positions[p][1]-host.y for p, _ in links]
+        side = 'right' if abs(sum(xs)) >= abs(sum(ys))*0.35 and sum(xs)>=0 else \
+               'left' if abs(sum(xs)) >= abs(sum(ys))*0.35 else \
+               'bottom' if sum(ys)>=0 else 'top'
+        choices = []
+        for rot, mirror in ((0, False), (0, True), (180, False), (180, True)):
+            probe = _place_at(model, cid, 0, 0, rot, mirror, False)
+            if side in ('left','right'):
+                sign = 1 if side == 'right' else -1
+                x = sign*(host.half_width + probe.half_width + 2.0)
+                y = sum(host.pin_positions[h][1]-probe.pin_positions[q][1]
+                        for h,q in links)/len(links)
+            else:
+                sign = 1 if side == 'bottom' else -1
+                y = sign*(host.half_height + probe.half_height + 3.0)
+                x = sum(host.pin_positions[h][0]-probe.pin_positions[q][0]
+                        for h,q in links)/len(links)
+            # Try small alternate slots when another module already occupies
+            # the preferred position.
+            for shift in (0, 10, -10, 20, -20):
+                xx, yy = (x, y+shift) if side in ('left','right') else (x+shift, y)
+                item = _place_at(model, cid, round(xx*2)/2, round(yy*2)/2,
+                                 rot, mirror, False)
+                if not clear(item):
+                    continue
+                length = sum(abs(host.pin_positions[h][0]-item.pin_positions[q][0]) +
+                             abs(host.pin_positions[h][1]-item.pin_positions[q][1])
+                             for h,q in links)
+                # Prefer leads facing each other instead of looping around the
+                # back of a module. Small penalty for mirror/rotation complexity.
+                facing = sum(max(0, (item.pin_positions[q][0]-item.x)*(1 if side=='right' else -1))
+                             for _,q in links) if side in ('left','right') else 0
+                score = length + 3*facing + 0.25*abs(shift) + (0.5 if mirror else 0) + (0.8 if rot else 0)
+                choices.append((score, cid, item))
+        if not choices:
+            return None
+        layout[cid] = min(choices, key=lambda row: (row[0],row[2].x,row[2].y))[2]
+
+    # For remaining two-terminal components, form signal-connected chains from
+    # the anchor(s). This is not a resistor/LED template: every 2-pin part gets
+    # the same treatment, and diode orientation follows its actual pin mapping.
+    pending = {cid for cid in model.components if cid not in layout and
+               model.components[cid].kind not in SOURCE_KINDS}
+    if any(len(model.symbols[cid].pins) != 2 for cid in pending):
+        return None
+    for _ in range(len(pending)+1):
+        progress = False
+        for cid in sorted(pending):
+            links = []
+            for pin, net in model.components[cid].pins.items():
+                if net in supply:
+                    continue
+                for neighbor, placed in layout.items():
+                    for npin, nnet in model.components[neighbor].pins.items():
+                        if nnet == net:
+                            pos=placed.pin_positions[npin]
+                            links.append((neighbor, pin, pos, net))
+            if not links:
+                continue
+            # A link to an IC establishes the visual side. For a signal chain,
+            # follow the already placed upstream part toward its outer side.
+            links.sort(key=lambda row: (row[0] != root, row[0] not in multi, row[0]))
+            neighbor, attach_pin, pos, net = links[0]
+            base = layout[neighbor]
+            if neighbor == root:
+                side = 'left' if pos[0] < base.x else 'right'
+            elif neighbor in multi:
+                side = 'left' if pos[0] < base.x else 'right'
+            else:
+                side = 'left' if base.x < host.x else 'right'
+            choices = []
+            for mirror in (False, True):
+                test = _place_at(model, cid, 0, 0, mirror=mirror, side_label=False)
+                # Keep short local nets between component terminals.
+                spacing = base.half_width + test.half_width + 2.2
+                ideal_x = base.x + spacing*(1 if side == 'right' else -1)
+                ideal_y = pos[1] - test.pin_positions[attach_pin][1]
+                for offset in (0, -8, 8, -16, 16):
+                    item = _place_at(model, cid, round(ideal_x*2)/2,
+                                     round((ideal_y+offset)*2)/2, mirror=mirror)
+                    if not clear(item):
+                        continue
+                    distance = abs(pos[0]-item.pin_positions[attach_pin][0]) + \
+                               abs(pos[1]-item.pin_positions[attach_pin][1])
+                    # Assign local chains to clear lanes; avoid pushing parts
+                    # across their parent on a different side of the host.
+                    choices.append((distance+0.5*abs(offset), item.x, item.y, item))
+            if choices:
+                layout[cid] = min(choices, key=lambda row: row[:3])[3]
+                pending.remove(cid)
+                progress = True
+        if not progress:
+            break
+    if pending:
+        return None
+
+    # Position sources near the host on the left, but away from outgoing signal
+    # branches. Their shared power connections are routed or named later.
+    source_ids = [cid for cid in sorted(model.components)
+                  if model.components[cid].kind in SOURCE_KINDS]
+    for i, cid in enumerate(source_ids):
+        probe = _place_at(model, cid, 0, 0, side_label=True)
+        left = host.x-host.half_width
+        x = round((left-probe.half_width-2.5)*2)/2
+        for y in (-host.half_height+2.5 + 10*i, host.half_height+4 + 10*i,
+                  -host.half_height-12-10*i, 0):
+            item = _place_at(model, cid, x, round(y*2)/2, side_label=True)
+            if clear(item):
+                layout[cid] = item
+                break
+        else:
+            return None
+    if len(layout) != len(model.components):
+        return None
+    return Placement(layout, (tuple(sorted(layout)),), (tuple(sorted(layout)),))
+
+
+def place_model(model: CircuitModel, *, _skip_functional: bool = False) -> Placement:
+    """Place components deterministically; permit legacy general-layout fallback."""
     specialized = _bridge_placement(model)
     if specialized is not None:
         return specialized
     specialized = _controller_placement(model)
     if specialized is not None:
         return specialized
+    if not _skip_functional:
+        specialized = _functional_multiblock_placement(model)
+        if specialized is not None:
+            return specialized
     specialized = _ic_neighborhood_placement(model)
     if specialized is not None:
         return specialized
@@ -593,6 +797,225 @@ def place_model(model: CircuitModel) -> Placement:
                     abs(a.y - b.y) < a.half_height + b.half_height - 1e-8):
                 raise ValueError(f"Placement collision between {cid} and {oid}")
     return Placement(items, tuple(layers), tuple(groups))
+
+
+
+# --- General connectivity-aware schematic organization ---
+# These candidates never edit the circuit graph or alter the pins within a
+# symbol. A candidate is only useful if the router subsequently verifies it.
+
+def _translated(item: SymbolPlacement, x: float, y: float) -> SymbolPlacement:
+    x, y = round(x * 2) / 2, round(y * 2) / 2
+    dx, dy = x - item.x, y - item.y
+    return dataclasses.replace(
+        item, x=x, y=y,
+        pin_positions={name: (round(px + dx, 6), round(py + dy, 6))
+                       for name, (px, py) in item.pin_positions.items()})
+
+
+def _has_space(candidate: SymbolPlacement, items: dict[str, SymbolPlacement],
+               *, gap: float = 1.0) -> bool:
+    for other in items.values():
+        if other.cid == candidate.cid:
+            continue
+        if (abs(candidate.x - other.x) < candidate.half_width + other.half_width + gap
+                and abs(candidate.y - other.y) < candidate.half_height + other.half_height + gap):
+            return False
+    return True
+
+
+def _weighted_neighbors(model: CircuitModel) -> dict[str, dict[str, float]]:
+    # Ground/supply rails are global connectivity, not a reason to put all
+    # components next to each other. Actual signal nets have stronger pull.
+    supplies = {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN',
+                'VBAT', 'AGND', 'DGND', 'PWR'}
+    graph = {cid: {} for cid in model.components}
+    for name, refs in model.nets.items():
+        cids = sorted({ref.split('.', 1)[0] for ref in refs})
+        if len(cids) < 2:
+            continue
+        weight = (0.035 if name.upper() in supplies else 1.0) / (len(cids)-1)
+        for i, a in enumerate(cids):
+            for b in cids[i+1:]:
+                graph[a][b] = graph[a].get(b, 0) + weight
+                graph[b][a] = graph[b].get(a, 0) + weight
+    return graph
+
+
+def _relax_connections(model: CircuitModel, placement: Placement,
+                       passes: int = 2) -> Placement:
+    """Shorten local signal connections without changing pin orientation.
+
+    Weighted-coordinate relaxation is deliberately conservative: major ICs
+    remain anchors, sources stay to the left, and every move respects full
+    symbol/label bounding boxes. The renderer will re-route and reject any
+    candidate that cannot be connected without crossings.
+    """
+    graph = _weighted_neighbors(model)
+    items = dict(placement.symbols)
+    anchors = {cid for cid, symbol in model.symbols.items() if len(symbol.pins) >= 3}
+    # Leave disconnected islands in their current relative positions.
+    for _ in range(passes):
+        for cid in sorted(items, key=lambda cid: (cid in anchors,
+                                                  model.components[cid].kind in SOURCE_KINDS, cid)):
+            if cid in anchors or not graph[cid]:
+                continue
+            item = items[cid]
+            # Ignore global power nets when possible.
+            neighbors = [(items[k], w) for k, w in graph[cid].items() if w >= 0.15]
+            if not neighbors:
+                continue
+            total = sum(weight for _, weight in neighbors)
+            target_x = sum(part.x * weight for part, weight in neighbors) / total
+            target_y = sum(part.y * weight for part, weight in neighbors) / total
+            if model.components[cid].kind in SOURCE_KINDS:
+                target_x = min(target_x - 9, item.x + 4)
+            # Stay on the same side of a dominant IC to preserve signal flow.
+            if len(anchors) == 1 and cid not in anchors:
+                central = items[next(iter(anchors))]
+                if item.x < central.x - central.half_width:
+                    target_x = min(target_x, central.x - central.half_width - item.half_width - 4)
+                elif item.x > central.x + central.half_width:
+                    target_x = max(target_x, central.x + central.half_width + item.half_width + 4)
+            # Try the locally cheapest step first. A half-grid quantization
+            # ensures the router and SVG have stable deterministic coordinates.
+            dx = max(-4.0, min(4.0, target_x-item.x))
+            dy = max(-3.5, min(3.5, target_y-item.y))
+            trials = ((item.x+dx, item.y+dy), (item.x+dx, item.y),
+                      (item.x, item.y+dy), (item.x+dx*.5, item.y+dy*.5))
+            def objective(x, y):
+                return sum(weight * (abs(x-other.x) + abs(y-other.y))
+                           for other, weight in neighbors)
+            current_score = objective(item.x, item.y)
+            options = []
+            for x, y in trials:
+                proposed = _translated(item, x, y)
+                if _has_space(proposed, items):
+                    score = objective(proposed.x, proposed.y)
+                    if score < current_score - 0.05:
+                        options.append((score, abs(x-item.x)+abs(y-item.y), proposed))
+            if options:
+                _, _, best = min(options, key=lambda row: (row[0], row[1], row[2].x, row[2].y))
+                items[cid] = best
+    return dataclasses.replace(placement, symbols=items)
+
+
+def _scale_centers(placement: Placement, factor_x: float, factor_y: float) -> Placement | None:
+    # Compact global whitespace, never resize an electrical symbol.
+    xs = [p.x for p in placement.symbols.values()]
+    ys = [p.y for p in placement.symbols.values()]
+    cx, cy = (min(xs)+max(xs))/2, (min(ys)+max(ys))/2
+    items = {}
+    for cid, item in sorted(placement.symbols.items()):
+        next_item = _translated(item, cx + (item.x-cx)*factor_x,
+                                cy + (item.y-cy)*factor_y)
+        if not _has_space(next_item, items, gap=1.0):
+            return None
+        items[cid] = next_item
+    return dataclasses.replace(placement, symbols=items)
+
+
+def _compact_around_primary(model: CircuitModel, placement: Placement) -> Placement | None:
+    """Pack component columns around a dominant IC, preserving pin orientations.
+
+    A netlist with one large controller and passive/sensor satellites usually
+    benefits from narrower horizontal channels and evenly packed vertical
+    columns. This is only a *proposal*: routing and display verification must
+    still succeed before it can be selected.
+    """
+    if len(placement.symbols) < 3 or len(placement.symbols) > 18:
+        return None
+    ranked = sorted(model.symbols, key=lambda cid: -len(model.symbols[cid].pins))
+    host = ranked[0]
+    if len(model.symbols[host].pins) < 4:
+        return None
+    if len(ranked) > 1 and len(model.symbols[ranked[1]].pins) >= len(model.symbols[host].pins):
+        return None
+    anchor = placement.symbols[host]
+    groups = {'left': [], 'right': []}
+    for cid, item in placement.symbols.items():
+        if cid == host:
+            continue
+        if item.x + item.half_width < anchor.x - anchor.half_width:
+            groups['left'].append(item)
+        elif item.x - item.half_width > anchor.x + anchor.half_width:
+            groups['right'].append(item)
+        else:
+            # Preserve less-standard top/bottom-connected devices.
+            return None
+    if not any(groups.values()):
+        return None
+
+    items = dict(placement.symbols)
+    for side, members in groups.items():
+        if not members:
+            continue
+        # Find columns from existing geometry without using component IDs,
+        # component kinds, or special-case circuit topologies.
+        columns = []
+        for item in sorted(members, key=lambda p: (abs(p.x-anchor.x), p.y)):
+            if columns and abs(item.x-columns[-1][0].x) < 2.7:
+                columns[-1].append(item)
+            else:
+                columns.append([item])
+
+        boundary = anchor.half_width
+        for depth, batch in enumerate(columns):
+            half_width = max(part.half_width for part in batch)
+            gap = 2.2 if depth == 0 else 1.4
+            center_distance = boundary + gap + half_width
+            next_x = anchor.x + center_distance * (1 if side == 'right' else -1)
+            boundary = center_distance + half_width
+
+            batch = sorted(batch, key=lambda p: (p.y, p.cid))
+            if len(batch) == 1:
+                centers = [batch[0].y]
+            else:
+                # Reduce excess vertical gaps without changing component order.
+                heights = [part.half_height for part in batch]
+                total = sum(2*h for h in heights) + (len(batch)-1)*1.15
+                mid = sum(part.y for part in batch)/len(batch)
+                cursor = mid - total/2
+                centers = []
+                for half_height in heights:
+                    centers.append(cursor + half_height)
+                    cursor += 2*half_height + 1.15
+            for part, next_y in zip(batch, centers):
+                items[part.cid] = _translated(part, next_x, next_y)
+
+    ordered = list(items.values())
+    for i, a in enumerate(ordered):
+        for b in ordered[i+1:]:
+            if (abs(a.x-b.x) < a.half_width+b.half_width+0.7 and
+                    abs(a.y-b.y) < a.half_height+b.half_height+0.7):
+                return None
+    return dataclasses.replace(placement, symbols=items)
+
+
+def layout_candidates(model: CircuitModel, baseline: Placement):
+    """Yield alternative deterministic layouts for any recognized netlist.
+
+    Keep the original as the first candidate. The caller MUST re-route and
+    electrically verify each candidate before it can be selected.
+    """
+    yield baseline
+    if len(model.components) < 2 or len(model.components) > 18:
+        return
+    seen = {tuple((cid, p.x, p.y) for cid, p in sorted(baseline.symbols.items()))}
+    for candidate in (
+        _compact_around_primary(model, baseline),
+        _relax_connections(model, baseline, 2),
+        _scale_centers(baseline, .86, 1.0),
+        _scale_centers(baseline, 1.0, .86),
+        _scale_centers(baseline, .90, .90),
+    ):
+        if candidate is None:
+            continue
+        fingerprint = tuple((cid, p.x, p.y) for cid, p in sorted(candidate.symbols.items()))
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        yield candidate
 
 
 def _net_guides(model: CircuitModel, placement: Placement):

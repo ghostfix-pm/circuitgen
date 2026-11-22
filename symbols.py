@@ -76,8 +76,9 @@ BUILTIN_SYMBOLS: dict[str, SymbolSpec] = {
         PinSpec("V+", 0, -2), PinSpec("V-", 0, 2)
     ), 1.5, 1.6),
     "ne555": _ic("ne555", (
-        ("TRIG", "2"), ("RESET", "4"), ("CTRL", "5"), ("THRES", "6"),
-    ), (("OUT", "3"), ("DISCH", "7")), (("VCC", "8"),), (("GND", "1"),)),
+        ("RESET", "4"), ("DISCH", "7"), ("THRES", "6"),
+        ("TRIG", "2"), ("CTRL", "5"),
+    ), (("OUT", "3"),), (("VCC", "8"),), (("GND", "1"),)),
     "arduino_uno": _ic("arduino_uno",
         tuple((f"D{i}", "") for i in range(14)),
         tuple((f"A{i}", "") for i in range(6)) +
@@ -148,7 +149,7 @@ def _el(tag: str, **attrs: object) -> str:
                              for key, value in attrs.items()) + '/>'
 
 
-def _local_art(symbol: SymbolSpec) -> list[str]:
+def _local_art(symbol: SymbolSpec, visible_pins: frozenset[str] | None = None) -> list[str]:
     """Draw shapes in pixel-space, centered on (0, 0)."""
     k, s = symbol.shape, GRID_PX
     out: list[str] = []
@@ -161,6 +162,8 @@ def _local_art(symbol: SymbolSpec) -> list[str]:
         out.append(_el("rect", x=-w*s, y=-h*s, width=2*w*s, height=2*h*s,
                        rx=4, **{"class": "symbol"}))
         for pin in symbol.pins:
+            if visible_pins is not None and pin.name not in visible_pins:
+                continue
             px, py = pin.x, pin.y
             if px < -w:
                 line(px, py, -w, py)
@@ -359,14 +362,15 @@ def make_symbol_svg(kind: str, value: str = "", cid: str = "U1",
 # REUSABLE SVG BODY
 
 def symbol_body_svg(symbol: SymbolSpec, x_px: float, y_px: float,
-                    rotation: int = 0, mirror: bool = False) -> str:
+                    rotation: int = 0, mirror: bool = False,
+                    visible_pins: frozenset[str] | None = None) -> str:
     """Draw the component body in a larger SVG; labels can be placed separately."""
     _check_orientation(rotation, mirror)
     if not math.isfinite(x_px) or not math.isfinite(y_px):
         raise ValueError("Symbol position must be finite")
     flip = " scale(-1 1)" if mirror else ""
     return (f'<g transform="translate({x_px:.2f} {y_px:.2f}) rotate({rotation}){flip}">'
-            + "\n".join(_local_art(symbol)) + "</g>")
+            + "\n".join(_local_art(symbol, visible_pins)) + "</g>")
 
 
 def symbol_pin_labels(symbol: SymbolSpec, rotation: int = 0,

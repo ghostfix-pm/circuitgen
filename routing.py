@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape
 
-from placement import Placement, place_model
+from placement import Placement, place_model, layout_candidates
 from symbols import GRID_PX, symbol_body_svg, symbol_pin_labels, transform_point
 
 if TYPE_CHECKING:
@@ -21,7 +21,8 @@ if TYPE_CHECKING:
 
 BODY_CLEARANCE = 0.20
 WIRE_CLEARANCE = 0.14
-BEND_PENALTY = 1.1
+BEND_PENALTY = 1.7
+CROSSING_PENALTY = 3.0  # crossing needs a bridge; prefer a modest detour
 ROUTING_MARGIN = 11.0
 MAX_TRACK_NODES = 32000
 MAX_ROUTING_STATES = 550000
@@ -81,6 +82,28 @@ def _segment_clearance(a: Point, b: Point, c: Point, d: Point) -> float:
     return math.hypot(dx, dy)
 
 
+def _unjoined_crossing(a: Point, b: Point, c: Point, d: Point, *, segment_margin: float = 0.60, edge_margin: float = 0.0) -> bool:
+    """True only for orthogonal crossings away from existing wire endpoints.
+
+    A temporary pathfinding edge may end exactly at the crossing; the
+    completed/compressed path has to pass *through* it, not turn onto it.
+    """
+    eps = 1e-6
+    ah=abs(a[1]-b[1])<eps and abs(a[0]-b[0])>eps
+    bh=abs(c[1]-d[1])<eps and abs(c[0]-d[0])>eps
+    av=abs(a[0]-b[0])<eps and abs(a[1]-b[1])>eps
+    bv=abs(c[0]-d[0])<eps and abs(c[1]-d[1])>eps
+    if ah and bv:
+        x,y=c[0],a[1]
+        return (min(a[0],b[0])+edge_margin-eps <= x <= max(a[0],b[0])-edge_margin+eps and
+                min(c[1],d[1])+segment_margin+eps < y < max(c[1],d[1])-segment_margin-eps)
+    if av and bh:
+        x,y=a[0],c[1]
+        return (min(a[1],b[1])+edge_margin-eps <= y <= max(a[1],b[1])-edge_margin+eps and
+                min(c[0],d[0])+segment_margin+eps < x < max(c[0],d[0])-segment_margin-eps)
+    return False
+
+
 def _rects_overlap(a, b) -> bool:
     """Conservative overlap test for label text, symbols and other labels."""
     return not (a[2] <= b[0] or b[2] <= a[0] or
@@ -102,6 +125,47 @@ def _net_label_box(net: str, endpoint: Point, side: str):
     if side == 'top':
         return x - width/2, y - 0.95, x + width/2, y - 0.24
     return x - width/2, y + 0.18, x + width/2, y + 0.90
+
+
+def _net_supply_role(model: CircuitModel, net: str) -> str | None:
+    """Identify actual supply nets from connected terminals, not only their names.
+
+    A shared GND or positive-supply symbol is an explicit virtual connection;
+    it does NOT grant permission to add a wire across another net.
+    """
+    positive = {'VCC', 'VDD', 'VIN', 'VBAT', '3V3', '5V', '12V', 'PWR'}
+    negative = {'GND', 'GROUND', 'AGND', 'DGND', 'VSS', '0V'}
+    roles = set()
+    up = net.upper()
+    if up in positive or up.startswith(('VCC_', 'VDD_', 'VIN_', 'VBAT_')):
+        roles.add('power')
+    if up in negative or up.startswith(('GND_', 'GROUND_', 'AGND_', 'DGND_')) or up.endswith('_GND'):
+        roles.add('ground')
+    for ref in model.nets[net]:
+        cid, pin = ref.split('.', 1)
+        kind = model.components[cid].kind
+        if kind in {'battery', 'dc_source'} and pin in {'p', 'n'}:
+            roles.add('power' if pin == 'p' else 'ground')
+        if pin.upper() in positive:
+            roles.add('power')
+        if pin.upper() in negative:
+            roles.add('ground')
+    return next(iter(roles)) if len(roles) == 1 else None
+
+
+def _symbol_label_metrics(label: NetLabel, role: str | None):
+    """Extra visual extents (routing units) used for a power/ground terminal."""
+    x, y = label.endpoint
+    if role == 'ground':
+        if label.side == 'left':
+            return (x-0.85, y-0.6), (x, y+0.6)
+        if label.side == 'right':
+            return (x, y-0.6), (x+0.85, y+0.6)
+        if label.side == 'top':
+            return (x-0.6, y-0.85), (x+0.6, y)
+        return (x-0.6, y), (x+0.6, y+0.85)
+    return ((x-0.40*len(label.net)-1.0, y-1.25),
+            (x+0.40*len(label.net)+1.0, y+1.25))
 
 
 def _segments(points):
@@ -262,25 +326,28 @@ class _MeshRouter:
     def _valid(self, u, v, net):
         key = (u, v) if u < v else (v, u)
         if not self.edge_geometry_clear(*key):
-            return False
+            return None
         a, b = self._p(u), self._p(v)
         # Text knockout is for readability, not permission to route an
         # unrelated signal directly behind a named-net label.
         if any(owner != net and _intersects_rect(a, b, box)
                for owner, box in self.label_boxes):
-            return False
+            return None
         for point, owner in self.reserved_pins:
             if owner != net and _segment_clearance(a, b, point, point) <= WIRE_CLEARANCE:
-                return False
+                return None
         for endpoint, body_point, owner in self.pin_leads:
             if owner != net and _segment_clearance(a, b, endpoint, body_point) <= WIRE_CLEARANCE:
-                return False
+                return None
+        crossings = 0
         for owner, segments in self.existing.items():
             if owner != net:
                 for c, d in segments:
                     if _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
-                        return False
-        return True
+                        if not _unjoined_crossing(a, b, c, d):
+                            return None
+                        crossings += 1
+        return crossings
 
     def _neighbors(self, node):
         x, y = node
@@ -317,10 +384,12 @@ class _MeshRouter:
             if expanded > MAX_ROUTING_STATES:
                 raise RoutingError(f'Routing search limit exceeded on net {net}')
             for nxt, d in self._neighbors(node):
-                if not self._valid(node, nxt, net):
+                crossings = self._valid(node, nxt, net)
+                if crossings is None:
                     continue
                 a, b = self._p(node), self._p(nxt)
-                cost2 = cost + abs(a[0]-b[0]) + abs(a[1]-b[1])
+                cost2 = (cost + abs(a[0]-b[0]) + abs(a[1]-b[1])
+                         + CROSSING_PENALTY * crossings)
                 if direction not in (-1, d):
                     cost2 += BEND_PENALTY
                 newstate = (nxt, d)
@@ -417,7 +486,8 @@ class _MeshRouter:
                 if owner != net and _segment_clearance(a, b, endpoint, body_point) <= WIRE_CLEARANCE:
                     raise RoutingError(f'Wire from {net} touches an unrelated pin lead')
             for other, c, d in segments[i+1:]:
-                if net != other and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
+                if (net != other and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE and
+                        not _unjoined_crossing(a, b, c, d, segment_margin=0.60, edge_margin=0.60)):
                     raise RoutingError(f'Wires from {net} and {other} intersect')
 
 
@@ -472,7 +542,8 @@ def verify_display_connectivity(model: CircuitModel, routed: RoutedCircuit) -> N
     # Recheck disjoint nets independently of the router's occupancy bookkeeping.
     for i, (name, a, b) in enumerate(all_segments):
         for other, c, d in all_segments[i+1:]:
-            if name != other and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
+            if (name != other and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE and
+                    not _unjoined_crossing(a, b, c, d, segment_margin=0.60, edge_margin=0.60)):
                 raise RoutingError(f'Displayed wires from {name} and {other} touch')
         for ref, pos in pin_positions.items():
             owner = expected.get(ref)
@@ -569,20 +640,29 @@ def _route_model_base(model: CircuitModel, placement: Placement | None = None) -
     # Local two-pin signal connections should be committed before wide buses.
     local_first = sorted(model.nets, key=lambda n: (wire_span(n), len(model.nets[n]), n))
     wide_first = sorted(model.nets, key=lambda n: (-len(model.nets[n]), n))
-    power_names = {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN', 'VBAT', 'AGND', 'DGND'}
-    power = frozenset(n for n in model.nets if n.upper() in power_names)
+    # Only established supply nets are eligible for conventional connector
+    # glyphs; all signal nets retain physical-wire preference.
+    power = frozenset(n for n in model.nets if _net_supply_role(model, n))
     errors = []
 
     def try_route(order, named):
         return _MeshRouter(model, placement, ROUTING_MARGIN, frozenset(named)).route(order)
 
-    # Trying the short connections first drastically improves IC layouts; the
-    # second order still handles unusual high-fanout and parallel geometries.
+    # Prefer verified all-wire diagrams. Among successful route orders, favor
+    # fewer unjoined crossings over small savings in wire length.
+    complete_wiring = []
     for order in (local_first, wide_first):
         try:
-            return try_route(order, ())
+            candidate = try_route(order, ())
+            from optimization import assess_layout
+            complete_wiring.append((_crossover_count(candidate),
+                                    assess_layout(candidate).score, candidate))
+            # Still evaluate the alternate order: it may have a much smaller
+            # footprint or shorter wires even with zero crossings.
         except RoutingError as error:
             errors.append('all-wire: ' + str(error))
+    if complete_wiring:
+        return min(complete_wiring, key=lambda x: (x[1] + 16*x[0], x[0]))[2]
 
     # Power labels are conventional, unlike using labels on every signal path.
     # We try more than one order, but stop once a fully signal-wired plan works.
@@ -614,26 +694,178 @@ def _route_model_base(model: CircuitModel, placement: Placement | None = None) -
 
 def route_model(model: CircuitModel, placement: Placement | None = None,
                 *, optimize: bool = False) -> RoutedCircuit:
-    """Route a netlist. Optional improvement never accepts an unverified layout."""
+    """Choose a readable verified layout from bounded general candidates.
+
+    Never accept a visually attractive but electrically unverified drawing.
+    The source netlist stays unchanged. Routing failures are not suppressed.
+    """
     if placement is not None:
-        # Callers supplying placement explicitly control the geometry.
-        result = _route_model_base(model, placement)
-    else:
-        original = place_model(model)
-        last_error = None
-        for candidate in (original, _expanded_placement(original, 1.25),
-                          _expanded_placement(original, 1.5)):
-            try:
-                result = _route_model_base(model, candidate)
+        return _route_model_base(model, placement)
+
+    from optimization import assess_layout
+    original = place_model(model)
+    best = None
+    best_score = math.inf
+    last_error = None
+
+    # One extra automatic layout candidate is enough for normal interactive
+    # use. Explicit --optimize requests can try a few more.
+    candidates = list(layout_candidates(model, original))
+    budget = min(len(candidates), 5 if optimize else 2)
+    for index, candidate in enumerate(candidates[:budget]):
+        scales = (1.0,) if index else (1.0, 1.25, 1.5)
+        for scale in scales:
+            # Expansion is for recovery, not for making a successful drawing
+            # larger. Stop at the original scale if it routed successfully.
+            if best is not None and scale != 1.0:
                 break
+            attempt = candidate if scale == 1.0 else _expanded_placement(candidate, scale)
+            try:
+                routed = _route_model_base(model, attempt)
             except RoutingError as error:
                 last_error = error
+                continue
+            # Make confusing crossings materially more expensive when
+            # evaluating compact candidate placements.
+            score = assess_layout(routed).score + 16*_crossover_count(routed)
+            if score < best_score - 1e-5:
+                best_score, best = score, routed
+            break
+        if best is not None and index == 0 and len(model.components) > 18:
+            break
+    if best is None:
+        # A new visual heuristic must never make a formerly drawable circuit
+        # unrenderable. If the functional arrangement cannot route, retry the
+        # original general/topological placement with the same strict checks.
+        general = place_model(model, _skip_functional=True)
+        if general.symbols != original.symbols:
+            for scale in (1.0, 1.25):
+                attempt = general if scale == 1.0 else _expanded_placement(general, scale)
+                try:
+                    return _route_model_base(model, attempt)
+                except RoutingError as error:
+                    last_error = error
+        raise RoutingError(f'No verified layout after routing and spacing retries: {last_error}')
+    return best
+
+
+def _crossover_count(routed: RoutedCircuit) -> int:
+    return sum(len(points) for points in _crossover_map(routed).values()) // 2
+
+
+def _crossover_map(routed: RoutedCircuit):
+    """Locate confirmed unjoined, perpendicular crossings for SVG jump glyphs.
+
+    The route verifier has already checked every such crossing stays away from
+    wire ends and from actual component terminals. This function has no
+    influence on electrical connectivity: it only renders clear crossover
+    signs on top of an already-validated netlist.
+    """
+    segments = []
+    for net, paths in routed.paths.items():
+        for path_index, path in enumerate(paths):
+            for segment_index, (a, b) in enumerate(_segments(path)):
+                if _pt(a) != _pt(b):
+                    segments.append((net, path_index, segment_index, a, b))
+    crossings = defaultdict(list)
+    for i, (net, pi, si, a, b) in enumerate(segments):
+        for other, opi, osi, c, d in segments[i+1:]:
+            if net == other:
+                continue
+            if not _unjoined_crossing(a, b, c, d, segment_margin=0.60,
+                                       edge_margin=0.60):
+                continue
+            if abs(a[1]-b[1]) < 1e-6:
+                pt = _pt((c[0], a[1]))
+            else:
+                pt = _pt((a[0], c[1]))
+            crossings[(net, pi, si)].append(pt)
+            crossings[(other, opi, osi)].append(pt)
+    return crossings
+
+
+def _crossover_hop_geometry(routed: RoutedCircuit, crossover_map):
+    """Shared hop measurements for both wires at each crossover.
+
+    A previous version centered the gap in the vertical wire on the original
+    crossing rather than on the *raised bridge apex*. That left the curved
+    stroke touching the other wire in the finished SVG. Compute the two from
+    the same geometry so visual nonconnections cannot acquire a false join.
+    """
+    hops = {}
+    for (net, path_i, seg_i), crossings in crossover_map.items():
+        a, b = _segments(routed.paths[net][path_i])[seg_i]
+        if abs(a[1] - b[1]) > 1e-6:  # Calculate once, from the horizontal wire.
+            continue
+        xs = sorted({pt[0] for pt in crossings})
+        for j, x in enumerate(xs):
+            room = min(abs(x - a[0]), abs(b[0] - x))
+            if j:
+                room = min(room, (x - xs[j-1]) / 2)
+            if j+1 < len(xs):
+                room = min(room, (xs[j+1] - x) / 2)
+            radius = min(0.34, 0.78 * room)
+            if radius < 0.08:
+                raise RoutingError(f'Insufficient space for an unconnected wire jump on {net}')
+            height = min(0.46, 1.35 * radius)
+            hops[_pt((x, a[1]))] = (radius, height)
+    return hops
+
+
+def _svg_routed_path(net: str, path_index: int, path: tuple[Point, ...],
+                     crossover_map, hop_geometry, locate) -> str:
+    """Render smooth, continuous wire bridges with accurately aligned gaps.
+
+    The *horizontal* wire is a continuous two-cubic hump with horizontal
+    tangent at entry, apex and exit. The vertical wire has a short gap exactly
+    at the hump's apex, so the SVG cannot falsely appear shorted. Gap/bridge
+    dimensions are derived from the same point, independent of path order.
+    """
+    x0, y0 = locate(path[0])
+    commands = [f'M {x0:.2f} {y0:.2f}']
+    for index, (a, b) in enumerate(_segments(path)):
+        crossings = crossover_map.get((net, path_index, index), ())
+        if abs(a[1] - b[1]) < 1e-6:
+            direction = 1 if b[0] > a[0] else -1
+            xs = sorted({round(pt[0], 6) for pt in crossings}, reverse=direction < 0)
+            for x in xs:
+                radius, height = hop_geometry[_pt((x, a[1]))]
+                y = a[1]
+                before = locate((x - direction*radius, y))
+                apex = locate((x, y - height))
+                after = locate((x + direction*radius, y))
+                c1 = locate((x - direction*.55*radius, y))
+                c2 = locate((x - direction*.45*radius, y-height))
+                c3 = locate((x + direction*.45*radius, y-height))
+                c4 = locate((x + direction*.55*radius, y))
+                commands.append(f'L {before[0]:.2f} {before[1]:.2f}')
+                commands.append(f'C {c1[0]:.2f} {c1[1]:.2f} '
+                                f'{c2[0]:.2f} {c2[1]:.2f} '
+                                f'{apex[0]:.2f} {apex[1]:.2f}')
+                commands.append(f'C {c3[0]:.2f} {c3[1]:.2f} '
+                                f'{c4[0]:.2f} {c4[1]:.2f} '
+                                f'{after[0]:.2f} {after[1]:.2f}')
+            bx, by = locate(b)
+            commands.append(f'L {bx:.2f} {by:.2f}')
         else:
-            raise RoutingError(f'Routing failed after spacing expansion: {last_error}')
-    if optimize:
-        from optimization import choose_better_layout
-        return choose_better_layout(model, result, _route_model_base)
-    return result
+            direction = 1 if b[1] > a[1] else -1
+            ys = sorted({round(pt[1], 6) for pt in crossings}, reverse=direction < 0)
+            for y in ys:
+                radius, height = hop_geometry[_pt((a[0], y))]
+                # Gap is centered on the actual curved-wire intersection,
+                # not the original orthogonal crossing at (x, y).
+                gap_center = y - height
+                half_gap = min(0.19, max(0.13, radius*.55))
+                low, high = gap_center - half_gap, gap_center + half_gap
+                before_y = low if direction > 0 else high
+                after_y = high if direction > 0 else low
+                before = locate((a[0], before_y))
+                after = locate((a[0], after_y))
+                commands.append(f'L {before[0]:.2f} {before[1]:.2f}')
+                commands.append(f'M {after[0]:.2f} {after[1]:.2f}')
+            bx, by = locate(b)
+            commands.append(f'L {bx:.2f} {by:.2f}')
+    return ' '.join(commands)
 
 
 def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str = "#000000") -> str:
@@ -653,12 +885,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
         for path in paths:
             bounds.extend(path)
     for label in result.labels:
-        x, y = label.endpoint
-        size = 0.34*len(label.net)+0.5
-        if label.side == 'left': bounds.extend(((x-size, y-0.65), (x, y+0.5)))
-        elif label.side == 'right': bounds.extend(((x, y-0.65), (x+size, y+0.5)))
-        elif label.side == 'top': bounds.extend(((x-size/2, y-1), (x+size/2, y)))
-        else: bounds.extend(((x-size/2, y), (x+size/2, y+1)))
+        bounds.extend(_symbol_label_metrics(label, _net_supply_role(model, label.net)))
     x0 = min(x for x, _ in bounds)*GRID_PX-26
     y0 = min(y for _, y in bounds)*GRID_PX-26
     x1 = max(x for x, _ in bounds)*GRID_PX+26
@@ -682,16 +909,24 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
     # Mask wire ink, not the SVG background. Black glyphs in the mask make
     # genuinely transparent gaps beneath net labels on any background.
     label_drawings = []
+    symbol_drawings = []
     for label in result.labels:
         x, y = loc(label.endpoint)
+        role = _net_supply_role(model, label.net)
+        if role in {'ground', 'power'}:
+            symbol_drawings.append((label, x, y, role))
+            if role == 'ground':
+                continue  # Recognizable earth symbol instead of floating text.
+        # Leave a gap between the power flag and its supply name.
+        offset = 20 if role == 'power' else 4
         if label.side == 'left':
-            x -= 4; y -= 4; anchor = 'end'
+            x -= offset; y -= 4; anchor = 'end'
         elif label.side == 'right':
-            x += 4; y -= 4; anchor = 'start'
+            x += offset; y -= 4; anchor = 'start'
         elif label.side == 'top':
-            y -= 8; anchor = 'middle'
+            y -= 24 if role == 'power' else 8; anchor = 'middle'
         else:
-            y += 18; anchor = 'middle'
+            y += 29 if role == 'power' else 18; anchor = 'middle'
         markup = (f'data-net="{xml(label.net)}" data-pin="{xml(label.ref)}" '
                   f'text-anchor="{anchor}" x="{x:.2f}" y="{y:.2f}"')
         label_drawings.append((markup, xml(label.net)))
@@ -705,12 +940,13 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
                        f'style="fill:black;stroke:black">{value}</text>')
         out.append('</mask></defs>')
         out.append('<g mask="url(#schemai-label-cutout)">')
+    crossover_map = _crossover_map(result)
+    hop_geometry = _crossover_hop_geometry(result, crossover_map)
     for net in sorted(result.paths):
-        for path in result.paths[net]:
+        for path_index, path in enumerate(result.paths[net]):
             if len(path) < 2:
                 continue
-            coords = [loc(p) for p in path]
-            d = 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in coords)
+            d = _svg_routed_path(net, path_index, path, crossover_map, hop_geometry, loc)
             out.append(f'<path class="wire" data-net="{xml(net)}" d="{d}"/>')
     for net in sorted(result.junctions):
         for p in result.junctions[net]:
@@ -718,6 +954,27 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
             out.append(f'<circle class="junction" data-net="{xml(net)}" cx="{x:.2f}" cy="{y:.2f}" r="4.2"/>')
     if label_drawings:
         out.append('</g>')
+    # Connectors are graphical signs attached to verified label stubs. They
+    # cannot introduce an unverified junction or hidden electrical short.
+    out.append('<style>.ground-mark,.power-mark{fill:none;stroke:#264a6f;stroke-width:2.6;stroke-linejoin:round;stroke-linecap:round}</style>')
+    for label, x, y, role in symbol_drawings:
+        name = xml(label.net)
+        ref = xml(label.ref)
+        if label.side == 'top':
+            angle = 180 if role == 'ground' else 0
+        elif label.side == 'bottom':
+            angle = 0 if role == 'ground' else 180
+        elif label.side == 'left':
+            angle = 90 if role == 'ground' else -90
+        else:
+            angle = -90 if role == 'ground' else 90
+        if role == 'ground':
+            shape = 'M -10 0 H 10 M -7 5 H 7 M -4 10 H 4'
+            kind = 'ground-mark'
+        else:
+            shape = 'M -7 -1 L 0 -12 L 7 -1 Z'
+            kind = 'power-mark'
+        out.append(f'<g class="{kind}" data-net="{name}" data-pin="{ref}" transform="translate({x:.2f} {y:.2f}) rotate({angle})"><path d="{shape}"/></g>')
     for markup, value in label_drawings:
         out.append(f'<text class="netlabel" {markup}>{value}</text>')
     for cid in sorted(placed.symbols):
@@ -726,7 +983,9 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
         symbol = model.symbols[cid]
         cx, cy = loc((item.x, item.y))
         out.append(f'<g data-component="{xml(cid)}" data-type="{xml(comp.kind)}">')
-        out.append(symbol_body_svg(symbol, cx, cy, item.rotation, item.mirror))
+        active_pins = frozenset(comp.pins) if symbol.shape == 'ic' else None
+        out.append(symbol_body_svg(symbol, cx, cy, item.rotation, item.mirror,
+                                   visible_pins=active_pins))
         out.append(f'<text class="name" text-anchor="{item.label_anchor}" x="{cx+item.title_x*GRID_PX:.2f}" y="{cy+item.title_y*GRID_PX:.2f}">{xml(cid)}</text>')
         if comp.value:
             out.append(f'<text class="value" text-anchor="{item.label_anchor}" x="{cx+item.value_x*GRID_PX:.2f}" y="{cy+item.value_y*GRID_PX:.2f}">{xml(comp.value)}</text>')
@@ -735,6 +994,8 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
                 # Names inside the IC body leave outside pin leads unobstructed.
                 left, top, right, bottom = _bounds(item, symbol)
                 for pin in symbol.pins:
+                    if pin.name not in comp.pins:
+                        continue
                     px, py = item.pin_positions[pin.name]
                     label = pin.name + (f' ({pin.number})' if pin.number else '')
                     if px < left:
@@ -749,7 +1010,9 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
                         continue
                     out.append(f'<text class="pin" text-anchor="{anchor}" x="{lx:.2f}" y="{cy+ly:.2f}">{xml(label)}</text>')
             else:
-                for label, lx, baseline, anchor, side, _, _ in symbol_pin_labels(symbol, item.rotation, item.mirror):
+                for label, lx, baseline, anchor, side, pin_x, pin_y in symbol_pin_labels(symbol, item.rotation, item.mirror):
+                    if label.split(' (', 1)[0] not in comp.pins:
+                        continue
                     if side in ('left', 'right'):
                         baseline -= 8
                     out.append(f'<text class="pin" text-anchor="{anchor}" x="{cx+lx:.2f}" y="{cy+baseline:.2f}">{xml(label)}</text>')
