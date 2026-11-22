@@ -1,7 +1,7 @@
 import copy
 import unittest
 
-from engine import CircuitError, make_svg_from_netlist
+from circuitgen.engine import CircuitError, make_svg_from_netlist
 
 
 def netlist(parts, nets):
@@ -166,7 +166,7 @@ if __name__ == "__main__":
 
 class TestGeneralModel(unittest.TestCase):
     def test_multi_source_model(self):
-        from engine import validate_model
+        from circuitgen.engine import validate_model
         raw = netlist([('V1','battery','9V'),('V2','ac_source','5Vrms'),('R1','resistor','1k')],
                       [['V1.p','R1.a'],['V1.n','V2.n'],['V2.p','R1.b']])
         model = validate_model(raw)
@@ -174,7 +174,7 @@ class TestGeneralModel(unittest.TestCase):
         self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_custom_multipin_component(self):
-        from engine import validate_model
+        from circuitgen.engine import validate_model
         raw = {'components':[{'id':'U1','type':'custom_chip','value':'demo','pins':['VCC','GND','OUT']},
                              {'id':'R1','type':'resistor','value':'1k'}],
                'nets':[{'name':'POWER','pins':['U1.VCC','R1.a']},
@@ -185,14 +185,14 @@ class TestGeneralModel(unittest.TestCase):
         self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_unknown_pin_rejected(self):
-        from engine import validate_model
+        from circuitgen.engine import validate_model
         raw = {'components':[{'id':'Q1','type':'npn','value':'2N3904'}],
                'nets':[{'name':'N1','pins':['Q1.INVALID']}]}
         with self.assertRaisesRegex(CircuitError, 'Unknown terminal'):
             validate_model(raw)
 
     def test_duplicate_pin_assignment_rejected(self):
-        from engine import validate_model
+        from circuitgen.engine import validate_model
         raw = {'components':[{'id':'R1','type':'resistor','value':'1k'}],
                'nets':[{'name':'N1','pins':['R1.a']},{'name':'N2','pins':['R1.a']}]}
         with self.assertRaisesRegex(CircuitError, 'assigned more than once'):

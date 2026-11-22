@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from engine import CircuitError, CircuitModel, validate_model
+from .engine import CircuitError, CircuitModel, validate_model
 
 
 @dataclass(frozen=True)
@@ -265,7 +265,7 @@ def check_model(model: CircuitModel) -> ERCReport:
 
 
 def model_builtin_kinds() -> frozenset[str]:
-    from symbols import BUILTIN_SYMBOLS
+    from .symbols import BUILTIN_SYMBOLS
     return frozenset(BUILTIN_SYMBOLS)
 
 

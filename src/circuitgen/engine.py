@@ -7,7 +7,7 @@ import re
 from typing import Any
 from xml.sax.saxutils import escape as xml_escape
 
-from symbols import BUILTIN_SYMBOLS, SymbolSpec, get_symbol
+from .symbols import BUILTIN_SYMBOLS, SymbolSpec, get_symbol
 
 # CONFIG
 
@@ -689,7 +689,7 @@ def svg(circuit: Circuit, ink: Ink) -> str:
 # API
 
 def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False, color: str = "#000000") -> str:
-    from colors import apply_ink_color
+    from .colors import apply_ink_color
     model = validate_model(raw)
     if (all(c.kind in VALID_TYPES for c in model.components.values()) and
             all(len(c.pins) == 2 for c in model.components.values()) and
@@ -706,13 +706,13 @@ def make_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False, color:
 
 def route_netlist(raw: dict[str, Any], *, optimize: bool = False):
     """Return verified orthogonal wire paths for a general circuit."""
-    from routing import route_model
+    from .routing import route_model
     return route_model(validate_model(raw), optimize=optimize)
 
 
 def make_routed_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False, color: str = "#000000") -> str:
     """Route a general circuit and render a transparent SVG."""
-    from routing import make_routed_svg
+    from .routing import make_routed_svg
     return make_routed_svg(validate_model(raw), optimize=optimize, color=color)
 
 
@@ -721,13 +721,13 @@ def make_routed_svg_from_netlist(raw: dict[str, Any], *, optimize: bool = False,
 
 def place_netlist(raw: dict[str, Any]):
     """Return geometry for any structurally valid netlist; no wires are routed."""
-    from placement import place_model
+    from .placement import place_model
     return place_model(validate_model(raw))
 
 
 def make_placement_preview_svg_from_netlist(raw: dict[str, Any]) -> str:
     """Render placement and dashed connectivity guides, NOT a wired schematic."""
-    from placement import make_placement_preview_svg
+    from .placement import make_placement_preview_svg
     return make_placement_preview_svg(validate_model(raw))
 
 
@@ -735,7 +735,7 @@ def make_placement_preview_svg_from_netlist(raw: dict[str, Any]) -> str:
 
 def check_electrical_rules(raw: dict[str, Any]):
     """Return errors, warnings and information without changing SVG output."""
-    from erc import check_electrical_rules as check
+    from .erc import check_electrical_rules as check
     return check(raw)
 
 

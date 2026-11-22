@@ -8,10 +8,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
-from engine import (make_routed_svg_from_netlist, make_svg_from_netlist,
+from circuitgen.engine import (make_routed_svg_from_netlist, make_svg_from_netlist,
                     route_netlist, validate_model)
-from optimization import assess_layout, choose_better_layout, compact_candidates
-from routing import RoutingError, route_model
+from circuitgen.optimization import assess_layout, choose_better_layout, compact_candidates
+from circuitgen.routing import RoutingError, route_model
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 

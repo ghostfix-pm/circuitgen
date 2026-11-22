@@ -7,8 +7,8 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from engine import make_routed_svg_from_netlist, make_svg_from_netlist, validate_model
-from motifs import match_rectifier, match_wheatstone, recognize_motif
+from circuitgen.engine import make_routed_svg_from_netlist, make_svg_from_netlist, validate_model
+from circuitgen.motifs import match_rectifier, match_wheatstone, recognize_motif
 
 ROOT = Path(__file__).resolve().parents[1]
 

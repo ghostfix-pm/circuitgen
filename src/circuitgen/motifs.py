@@ -10,7 +10,7 @@ import dataclasses
 import math
 from xml.sax.saxutils import escape as xml_escape
 
-from symbols import GRID_PX, symbol_body_svg
+from .symbols import GRID_PX, symbol_body_svg
 
 
 @dataclasses.dataclass(frozen=True)

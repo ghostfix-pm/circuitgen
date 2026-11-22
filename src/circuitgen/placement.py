@@ -12,11 +12,11 @@ import math
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape
 
-from symbols import (GRID_PX, SymbolSpec, pin_positions, symbol_body_svg,
+from .symbols import (GRID_PX, SymbolSpec, pin_positions, symbol_body_svg,
                      symbol_pin_labels, transform_point)
 
 if TYPE_CHECKING:
-    from engine import CircuitModel, Component
+    from .engine import CircuitModel, Component
 
 SOURCE_KINDS = {"battery", "dc_source", "ac_source", "current_source"}
 COLUMN_GAP = 6.0
@@ -1103,7 +1103,7 @@ if __name__ == "__main__":
     parser.add_argument("netlist", type=Path, help="JSON netlist file")
     parser.add_argument("output", type=Path, help="Destination SVG file")
     args = parser.parse_args()
-    from engine import validate_model
+    from .engine import validate_model
 
     raw = json.loads(args.netlist.read_text(encoding="utf-8"))
     result = make_placement_preview_svg(validate_model(raw))

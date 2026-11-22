@@ -11,11 +11,11 @@ import dataclasses
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
-from placement import Placement
+from .placement import Placement
 
 if TYPE_CHECKING:
-    from engine import CircuitModel
-    from routing import RoutedCircuit
+    from .engine import CircuitModel
+    from .routing import RoutedCircuit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -110,7 +110,7 @@ def choose_better_layout(model: CircuitModel,
 
     The baseline remains authoritative if candidates fail or score worse.
     """
-    from routing import RoutingError
+    from .routing import RoutingError
 
     if max_trials < 0 or max_trials > 12:
         raise ValueError('max_trials must be 0–12')

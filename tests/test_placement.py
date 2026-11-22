@@ -4,9 +4,9 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from engine import (CircuitError, make_placement_preview_svg_from_netlist,
+from circuitgen.engine import (CircuitError, make_placement_preview_svg_from_netlist,
                     make_svg_from_netlist, place_netlist, validate_model)
-from symbols import pin_positions
+from circuitgen.symbols import pin_positions
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 

@@ -2,13 +2,13 @@ import copy
 import unittest
 import xml.etree.ElementTree as ET
 
-from engine import CircuitError, make_svg_from_netlist, validate_model
-from symbols import BUILTIN_SYMBOLS, get_symbol, make_symbol_svg, pin_positions, transform_point
+from circuitgen.engine import CircuitError, make_svg_from_netlist, validate_model
+from circuitgen.symbols import BUILTIN_SYMBOLS, get_symbol, make_symbol_svg, pin_positions, transform_point
 
 
 class TestSymbolLibrary(unittest.TestCase):
     def test_every_legacy_part_has_registered_symbol(self):
-        from engine import VALID_TYPES
+        from circuitgen.engine import VALID_TYPES
         self.assertTrue(VALID_TYPES.issubset(BUILTIN_SYMBOLS))
         self.assertEqual(get_symbol("resistor").pin_names, ("a", "b"))
         self.assertEqual(get_symbol("battery").pin_names, ("p", "n"))

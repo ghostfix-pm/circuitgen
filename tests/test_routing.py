@@ -4,9 +4,9 @@ import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
-from engine import (CircuitError, make_routed_svg_from_netlist,
+from circuitgen.engine import (CircuitError, make_routed_svg_from_netlist,
                     make_svg_from_netlist, route_netlist, validate_model)
-from routing import (_MeshRouter, RoutingError, _intersects_rect,
+from circuitgen.routing import (_MeshRouter, RoutingError, _intersects_rect,
                      _segment_clearance, _segments, route_model)
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -137,7 +137,7 @@ class TestRouting(unittest.TestCase):
 
     def test_grid_budget_is_explicit_failure_not_partial_svg(self):
         from unittest.mock import patch
-        with patch('routing.MAX_TRACK_NODES', 1):
+        with patch('circuitgen.routing.MAX_TRACK_NODES', 1):
             with self.assertRaisesRegex(RoutingError, 'grid limit'):
                 route_netlist(self.bridge)
 

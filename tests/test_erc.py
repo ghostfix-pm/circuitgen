@@ -9,7 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 
-from engine import (CircuitError, check_electrical_rules, make_checked_svg_from_netlist,
+from circuitgen.engine import (CircuitError, check_electrical_rules, make_checked_svg_from_netlist,
                     make_svg_from_netlist)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -170,14 +170,14 @@ class TestElectricalRules(unittest.TestCase):
         self.assertGreater(result["summary"]["errors"], 0)
 
     def test_cli_returns_error_code_and_json(self):
-        proc = subprocess.run([sys.executable, "erc.py", "examples/erc_issues.json", "--json"],
+        proc = subprocess.run([sys.executable, "-m", "circuitgen.erc", "examples/erc_issues.json", "--json"],
                               cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 1, proc.stderr)
         report = json.loads(proc.stdout)
         self.assertIn("issues", report)
 
     def test_cli_clean_example(self):
-        proc = subprocess.run([sys.executable, "erc.py", "examples/wheatstone.json"],
+        proc = subprocess.run([sys.executable, "-m", "circuitgen.erc", "examples/wheatstone.json"],
                               cwd=ROOT, capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
 

@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from xml.sax.saxutils import escape as xml_escape
 
-from placement import Placement, place_model, layout_candidates
-from symbols import GRID_PX, symbol_body_svg, symbol_pin_labels, transform_point
+from .placement import Placement, place_model, layout_candidates
+from .symbols import GRID_PX, symbol_body_svg, symbol_pin_labels, transform_point
 
 if TYPE_CHECKING:
-    from engine import CircuitModel
+    from .engine import CircuitModel
 
 BODY_CLEARANCE = 0.20
 WIRE_CLEARANCE = 0.14
@@ -654,7 +654,7 @@ def _route_model_base(model: CircuitModel, placement: Placement | None = None) -
     for order in (local_first, wide_first):
         try:
             candidate = try_route(order, ())
-            from optimization import assess_layout
+            from .optimization import assess_layout
             complete_wiring.append((_crossover_count(candidate),
                                     assess_layout(candidate).score, candidate))
             # Still evaluate the alternate order: it may have a much smaller
@@ -702,7 +702,7 @@ def route_model(model: CircuitModel, placement: Placement | None = None,
     if placement is not None:
         return _route_model_base(model, placement)
 
-    from optimization import assess_layout
+    from .optimization import assess_layout
     original = place_model(model)
     best = None
     best_score = math.inf
@@ -870,8 +870,8 @@ def _svg_routed_path(net: str, path_index: int, path: tuple[Point, ...],
 
 def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str = "#000000") -> str:
     """Use historical motif rendering only for exact matches; otherwise route normally."""
-    from motifs import render_motif
-    from colors import apply_ink_color
+    from .motifs import render_motif
+    from .colors import apply_ink_color
     specialized = render_motif(model)
     if specialized is not None:
         return apply_ink_color(specialized, color)
@@ -1024,7 +1024,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
 if __name__ == '__main__':
     import argparse
     import json
-    from engine import validate_model
+    from .engine import validate_model
     parser = argparse.ArgumentParser(description='Render a verified routed SVG schematic')
     parser.add_argument('netlist', type=Path)
     parser.add_argument('output', type=Path)

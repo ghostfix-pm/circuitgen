@@ -13,7 +13,7 @@ import urllib.request
 import urllib.parse
 from typing import Any
 
-from engine import CircuitError
+from .engine import CircuitError
 
 DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-2.5-flash"
