@@ -1,15 +1,16 @@
-"""Gemini natural-language-to-netlist translation for built-in and custom components.
+"""Provider-independent natural-language-to-netlist translation for CircuitGen.
 
-Custom components use an explicit ``pins`` list. This is a logical schematic
-symbol, not a verified physical component pinout.
+Custom components use explicit logical ``pins`` lists, not verified physical pinouts.
+No third-party SDK is required; Python's standard library handles HTTP requests.
 """
-
 from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
+import urllib.parse
 from typing import Any
 
 from engine import CircuitError
@@ -17,8 +18,6 @@ from engine import CircuitError
 DEFAULT_PROVIDER = "gemini"
 DEFAULT_MODEL = "gemini-2.5-flash"
 
-# The component-level pins field is OPTIONAL because registered symbols already
-# define their pins. Unknown component types must supply it.
 SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -109,42 +108,96 @@ GENERAL NETLIST RULES:
 
 EXAMPLE — Arduino Uno with custom I2C sensor:
 {
-  "components": [
-    {"id":"U1","type":"arduino_uno","value":"Arduino Uno"},
-    {"id":"S1","type":"i2c_sensor","value":"generic",
-     "pins":["SDA","SCL","VCC","GND"]}
-  ],
-  "nets": [
-    {"name":"SDA_LINE","pins":["U1.A4","S1.SDA"]},
-    {"name":"SCL_LINE","pins":["U1.A5","S1.SCL"]},
-    {"name":"VCC","pins":["U1.5V","S1.VCC"]},
-    {"name":"GND","pins":["U1.GND","S1.GND"]}
-  ]
+ "components": [
+   {"id":"U1","type":"arduino_uno","value":"Arduino Uno"},
+   {"id":"S1","type":"i2c_sensor","value":"generic",
+    "pins":["SDA","SCL","VCC","GND"]}
+ ],
+ "nets": [
+   {"name":"SDA_LINE","pins":["U1.A4","S1.SDA"]},
+   {"name":"SCL_LINE","pins":["U1.A5","S1.SCL"]},
+   {"name":"VCC","pins":["U1.5V","S1.VCC"]},
+   {"name":"GND","pins":["U1.GND","S1.GND"]}
+ ]
 }
 
 User description:
 """
 
+PROVIDERS: dict[str, dict[str, str]] = {
+    "gemini": {"key": "GEMINI_API_KEY", "model": DEFAULT_MODEL},
+    "openai": {"key": "OPENAI_API_KEY", "model": "gpt-4.1-mini",
+               "url": "https://api.openai.com/v1/chat/completions"},
+    "anthropic": {"key": "ANTHROPIC_API_KEY", "model": "claude-sonnet-4-5",
+                  "url": "https://api.anthropic.com/v1/messages"},
+    "deepseek": {"key": "DEEPSEEK_API_KEY", "model": "deepseek-chat",
+                 "url": "https://api.deepseek.com/chat/completions"},
+    "groq": {"key": "GROQ_API_KEY", "model": "llama-3.3-70b-versatile",
+             "url": "https://api.groq.com/openai/v1/chat/completions"},
+    "mistral": {"key": "MISTRAL_API_KEY", "model": "mistral-small-latest",
+                "url": "https://api.mistral.ai/v1/chat/completions"},
+    "xai": {"key": "XAI_API_KEY", "model": "grok-3-mini",
+            "url": "https://api.x.ai/v1/chat/completions"},
+    "openrouter": {"key": "OPENROUTER_API_KEY", "model": "openai/gpt-4.1-mini",
+                   "url": "https://openrouter.ai/api/v1/chat/completions"},
+    "together": {"key": "TOGETHER_API_KEY", "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                 "url": "https://api.together.xyz/v1/chat/completions"},
+    "fireworks": {"key": "FIREWORKS_API_KEY", "model": "accounts/fireworks/models/llama-v3p3-70b-instruct",
+                  "url": "https://api.fireworks.ai/inference/v1/chat/completions"},
+    "cerebras": {"key": "CEREBRAS_API_KEY", "model": "llama-3.3-70b",
+                 "url": "https://api.cerebras.ai/v1/chat/completions"},
+}
 
-def generate_netlist(
-    user_prompt: str,
-    provider: str = DEFAULT_PROVIDER,
-    model: str | None = None,
-    correction: str = "",
-) -> dict[str, Any]:
-    """Request a netlist from Gemini. Validation/rendering remains in engine.py."""
-    if provider != "gemini":
-        raise CircuitError(f"Unsupported AI provider: {provider}")
-    model = model or DEFAULT_MODEL
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        raise CircuitError("GEMINI_API_KEY is not set")
-    full_text = PROMPT + user_prompt
-    if correction:
-        full_text += (
-            "\n\nPREVIOUS OUTPUT WAS REJECTED. Return a corrected full netlist. "
-            "Do not claim unsupported circuit is possible. Error: " + correction[:900]
-        )
+ALIASES = {"google": "gemini", "claude": "anthropic", "chatgpt": "openai", "grok": "xai"}
+
+
+def list_providers() -> list[str]:
+    """Return supported provider identifiers."""
+    return list(PROVIDERS)
+
+
+def _post_json(url: str, payload: dict[str, Any], headers: dict[str, str],
+               provider: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={"Content-Type": "application/json", **headers},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as res:
+            data = json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:700]
+        raise CircuitError(f"{provider} API HTTP {exc.code}: {detail}") from exc
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise CircuitError(f"{provider} API connection problem: {exc}") from exc
+    except (ValueError, UnicodeError) as exc:
+        raise CircuitError(f"{provider} API returned invalid response JSON") from exc
+    if not isinstance(data, dict):
+        raise CircuitError(f"{provider} API response was not an object")
+    if data.get("error"):
+        raise CircuitError(f"{provider} API error: {str(data['error'])[:700]}")
+    return data
+
+
+def _parse_netlist(raw: str, provider: str) -> dict[str, Any]:
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text).strip()
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError) as exc:
+        raise CircuitError(f"{provider} did not return valid netlist JSON") from exc
+    if not isinstance(decoded, dict):
+        raise CircuitError(f"{provider} JSON was not an object")
+    if not isinstance(decoded.get("components"), list) or not isinstance(decoded.get("nets"), list):
+        raise CircuitError(f"{provider} JSON must contain components and nets arrays")
+    return decoded
+
+
+def _gemini(full_text: str, model: str, key: str) -> str:
     payload = {
         "contents": [{"role": "user", "parts": [{"text": full_text}]}],
         "generationConfig": {
@@ -153,27 +206,100 @@ def generate_netlist(
             "responseJsonSchema": SCHEMA,
         },
     }
-    req = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{model}:generateContent",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST",
+    safe_model = urllib.parse.quote(model, safe="-._/")
+    data = _post_json(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{safe_model}:generateContent",
+        payload, {"x-goog-api-key": key}, "gemini",
     )
     try:
-        with urllib.request.urlopen(req, timeout=120) as res:
-            response = json.loads(res.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:900]
-        raise CircuitError(f"Gemini API HTTP {e.code}: {detail}") from e
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise CircuitError(f"Gemini API connection problem: {e}") from e
+        parts = data["candidates"][0]["content"]["parts"]
+        return "".join(part.get("text", "") for part in parts)
+    except (KeyError, IndexError, TypeError) as exc:
+        raise CircuitError("Gemini returned no usable text (possibly blocked or truncated)") from exc
+
+
+def _anthropic(full_text: str, model: str, key: str) -> str:
+    payload = {
+        "model": model,
+        "max_tokens": 8192,
+        "temperature": 0,
+        "system": "Return only the requested JSON netlist. No markdown or commentary.",
+        "messages": [{"role": "user", "content": full_text}],
+    }
+    data = _post_json(
+        PROVIDERS["anthropic"]["url"], payload,
+        {"x-api-key": key, "anthropic-version": "2023-06-01"}, "anthropic",
+    )
+    if data.get("stop_reason") == "max_tokens":
+        raise CircuitError("Anthropic response was truncated; try a simpler circuit")
+    blocks = data.get("content", [])
+    raw = "".join(block.get("text", "") for block in blocks if block.get("type") == "text")
+    if not raw.strip():
+        raise CircuitError("Anthropic returned no text")
+    return raw
+
+
+def _openai_compatible(full_text: str, provider: str, model: str, key: str) -> str:
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": "Return only one valid JSON object. No markdown."},
+            {"role": "user", "content": full_text},
+        ],
+    }
+    data = _post_json(
+        PROVIDERS[provider]["url"], payload,
+        {"Authorization": f"Bearer {key}"}, provider,
+    )
     try:
-        parts = response["candidates"][0]["content"]["parts"]
-        raw = "".join(p.get("text", "") for p in parts)
-        decoded = json.loads(raw)
-    except (KeyError, IndexError, TypeError, ValueError) as e:
-        raise CircuitError("Gemini did not return a valid netlist JSON object") from e
-    if not isinstance(decoded, dict):
-        raise CircuitError("Gemini JSON was not an object")
-    return decoded
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise CircuitError(f"{provider} response was truncated")
+        content = choice["message"]["content"]
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+        raise TypeError("No text content")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise CircuitError(f"{provider} returned no usable text") from exc
+
+
+def generate_netlist(
+    user_prompt: str,
+    provider: str = DEFAULT_PROVIDER,
+    model: str | None = None,
+    correction: str = "",
+) -> dict[str, Any]:
+    """Generate a JSON netlist using the selected AI provider.
+
+    Returns an unvalidated dict; pass it to the existing engine validator.
+    """
+    if not isinstance(user_prompt, str) or not user_prompt.strip():
+        raise CircuitError("Circuit description must be a nonempty string")
+    provider = ALIASES.get(provider.strip().lower(), provider.strip().lower())
+    if provider not in PROVIDERS:
+        raise CircuitError(
+            f"Unsupported AI provider: {provider}. Available: {', '.join(list_providers())}"
+        )
+    settings = PROVIDERS[provider]
+    chosen_model = model or settings["model"]
+    if not isinstance(chosen_model, str) or not chosen_model.strip():
+        raise CircuitError("Model must be a nonempty string")
+    key = os.environ.get(settings["key"], "").strip()
+    if not key:
+        raise CircuitError(f"{settings['key']} is not set")
+
+    full_text = PROMPT + user_prompt
+    if correction:
+        full_text += (
+            "\n\nPREVIOUS OUTPUT WAS REJECTED. Return a corrected full netlist. "
+            "Do not claim unsupported circuit is possible. Error: " + correction[:900]
+        )
+    if provider == "gemini":
+        raw = _gemini(full_text, chosen_model, key)
+    elif provider == "anthropic":
+        raw = _anthropic(full_text, chosen_model, key)
+    else:
+        raw = _openai_compatible(full_text, provider, chosen_model, key)
+    return _parse_netlist(raw, provider)
