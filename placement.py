@@ -202,6 +202,10 @@ def _one_island(model: CircuitModel, group: tuple[str, ...],
         stages[stage].append(cid)
         rot, mirror = _choose_orientation(comp, symbol, depths, cid == source)
         hw, hh, name_y, value_y = _geometry(symbol, comp, rot, mirror)
+        if comp.kind in SOURCE_KINDS or len(symbol.pins) > 2 or rot in (90, 270):
+            # Include relocated label space when computing layer spacing.
+            measured = _place_at(model, cid, 0.0, 0.0, rot, mirror, True)
+            hw, hh = measured.half_width, measured.half_height
         geometry[cid] = (rot, mirror, hw, hh, name_y, value_y)
 
     levels = sorted(stages)
@@ -231,8 +235,12 @@ def _one_island(model: CircuitModel, group: tuple[str, ...],
             y += half_height
             x = x_by_level[stage]
             pins = pin_positions(model.symbols[cid], x, y, rot, mirror)
-            layout[cid] = SymbolPlacement(cid, x, y, rot, mirror, hw, hh,
-                                          pins, name_y, value_y)
+            if model.components[cid].kind in SOURCE_KINDS or len(model.symbols[cid].pins) > 2 or rot in (90, 270):
+                layout[cid] = _place_at(model, cid, x, y, rotation=rot, mirror=mirror,
+                                         side_label=True)
+            else:
+                layout[cid] = SymbolPlacement(cid, x, y, rot, mirror, hw, hh,
+                                              pins, name_y, value_y)
             y += half_height + ROW_GAP
     return layout, [tuple(items) for items in ordered]
 
@@ -248,12 +256,19 @@ def _place_at(model: CircuitModel, cid: str, x: float, y: float,
     title_x = value_x = 0.0
     anchor = 'middle'
     if side_label:
-        # Vertical two-terminal symbols need their text beside, not across, pin wires.
-        title_x = value_x = 2.3
-        title_y, value_y = -0.34, 0.74
         anchor = 'start'
-        hw = max(hw, 2.3 + max(len(cid) * 10.5, len(comp.value) * 7.8) / GRID_PX + 1.0)
-        hh = max(hh, 2.8)
+        if len(symbol.pins) > 2:
+            # Put IC metadata outside the body and *above* side-pin exit rows.
+            # Centering metadata beside the IC blocks OUT/DISCH on the NE555.
+            title_x = value_x = symbol.half_width + 2.0
+            title_y = -symbol.half_height - 0.15
+            value_y = title_y + 0.85
+        else:
+            # Vertical sources need both labels beside their terminal axis.
+            title_x = value_x = 2.3
+            title_y, value_y = -0.34, 0.74
+        hw = max(hw, title_x + max(len(cid) * 10.5, len(comp.value) * 7.8) / GRID_PX + 1.0)
+        hh = max(hh, abs(title_y) + 1.0, abs(value_y) + 1.0)
     return SymbolPlacement(cid, x, y, rotation, mirror, hw, hh,
                            pin_positions(symbol, x, y, rotation, mirror),
                            title_y, value_y, title_x, value_x, anchor)
@@ -379,12 +394,177 @@ def _controller_placement(model: CircuitModel) -> Placement | None:
                      (tuple(sorted(model.components)),))
 
 
+
+
+def _ic_neighborhood_placement(model: CircuitModel) -> Placement | None:
+    """Connectivity-led placement around one multi-pin part, not a 555 template.
+
+    Nearby parts are grouped by their shared *signal* nets. Power and ground
+    are deliberately weak attraction forces, so they don't drag every part
+    into the same crowded column. Second-hop parts follow their neighbor.
+    All symbol positions and electrical connections remain unchanged.
+    """
+    controllers = [cid for cid, symbol in model.symbols.items() if len(symbol.pins) >= 3]
+    if len(controllers) != 1 or len(model.components) > 28:
+        return None
+    ic = controllers[0]
+    ic_part = model.components[ic]
+    ic_symbol = model.symbols[ic]
+    power_words = {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN', 'VBAT', 'AGND', 'DGND'}
+    def signal_weight(net: str) -> float:
+        if net.upper() in power_words:
+            return 0.03
+        return 1.0 / max(1, len(model.nets[net]) - 1)
+
+    center = _place_at(model, ic, 0, 0, side_label=True)
+    # Find which external side each connection naturally exits the central IC.
+    ic_nets = collections.defaultdict(list)
+    for pin, net in ic_part.pins.items():
+        x, y = center.pin_positions[pin]
+        if x < -ic_symbol.half_width - 0.05:
+            side = 'left'
+        elif x > ic_symbol.half_width + 0.05:
+            side = 'right'
+        elif y < -ic_symbol.half_height - 0.05:
+            side = 'top'
+        elif y > ic_symbol.half_height + 0.05:
+            side = 'bottom'
+        else:
+            side = 'left' if x < 0 else 'right'
+        ic_nets[net].append((side, x, y))
+
+    direct = {}
+    connected = collections.defaultdict(list)
+    for net, refs in model.nets.items():
+        parts = sorted({r.split('.', 1)[0] for r in refs})
+        for part in parts:
+            for other in parts:
+                if part != other:
+                    connected[part].append((other, net))
+    for cid, part in model.components.items():
+        if cid == ic or part.kind in SOURCE_KINDS:
+            continue
+        choices = []
+        for own_pin, net in part.pins.items():
+            for side, x, y in ic_nets.get(net, []):
+                choices.append((signal_weight(net), side, y, own_pin, net))
+        if any(weight >= 0.1 for weight, *_ in choices):
+            choices = [choice for choice in choices if choice[0] >= 0.1]
+            # Prefer signal pins to supply rails. For symmetric contact between
+            # opposite sides, the source component's own pin order breaks ties.
+            choices.sort(key=lambda item: (-item[0], {'right':0, 'left':1, 'top':2, 'bottom':3}[item[1]], item[4]))
+            direct[cid] = choices[0][1:]
+
+    assignments = {}
+    for cid, (side, y, pin, net) in direct.items():
+        assignments[cid] = (side, 1, y, pin, net)
+
+    # Follow the shortest signal-connected chain from the IC for other parts.
+    # A component with only power connections is still placed, but farther away.
+    remaining = set(model.components) - set(assignments) - {ic}
+    sources = {cid for cid in remaining if model.components[cid].kind in SOURCE_KINDS}
+    remaining -= sources
+    for _ in range(len(remaining) + 1):
+        changed = False
+        for cid in sorted(list(remaining)):
+            options = []
+            for neighbor, net in connected[cid]:
+                if neighbor in assignments:
+                    side, depth, y, _, _ = assignments[neighbor]
+                    options.append((depth, -signal_weight(net), neighbor, side, y, net))
+            if options:
+                depth, _, neighbor, side, y, net = min(options)
+                own_pin = next((pin for pin, n in model.components[cid].pins.items() if n == net), '')
+                assignments[cid] = (side, depth + 1, y, own_pin, net)
+                remaining.remove(cid)
+                changed = True
+        if not changed:
+            break
+    # Unconnected components have no meaningful side; put them in an outer column.
+    for cid in sorted(remaining):
+        assignments[cid] = ('right', 3, 0.0, '', '')
+
+    groups = collections.defaultdict(list)
+    for cid, (side, depth, preferred_y, near_pin, net) in assignments.items():
+        # Horizontal two-pin parts are easiest to connect and keep their text clear.
+        mirror = False
+        if len(model.symbols[cid].pins) == 2 and near_pin in ('a', 'b'):
+            mirror = (near_pin == 'b') if side == 'right' else (near_pin == 'a') if side == 'left' else False
+        part = _place_at(model, cid, 0, 0, mirror=mirror)
+        groups[(side, depth)].append((preferred_y, cid, part, mirror))
+
+    items = {ic: center}
+    side_width = {'left': center.half_width, 'right': center.half_width,
+                  'top': center.half_width, 'bottom': center.half_width}
+    max_layer = max((depth for side, depth in groups), default=1)
+    for depth in range(1, max_layer + 1):
+        for side in ('left', 'right', 'top', 'bottom'):
+            batch = sorted(groups.get((side, depth), []), key=lambda t: (t[0], t[1]))
+            if depth > 1:
+                following = []
+                for old_y, cid, part, mirror in batch:
+                    neighbors = [(signal_weight(net), neighbor, net)
+                                 for neighbor, net in connected[cid] if neighbor in items]
+                    if neighbors:
+                        _, neighbor, _ = max(neighbors)
+                        old_y = items[neighbor].y
+                    following.append((old_y, cid, part, mirror))
+                batch = sorted(following, key=lambda t: (t[0], t[1]))
+            if not batch:
+                continue
+            sizes = [t[2] for t in batch]
+            if side in ('left', 'right'):
+                max_half_w = max(p.half_width for p in sizes)
+                offset = side_width[side] + 5.5 + max_half_w
+                x = -offset if side == 'left' else offset
+                side_width[side] = offset + max_half_w
+                gap = 3.2
+                heights = [p.half_height for p in sizes]
+                total = sum(2*h for h in heights) + (len(batch)-1)*gap
+                preferred_center = max(-20.0, min(20.0, sum(t[0] for t in batch)/len(batch)))
+                cursor = preferred_center - total/2
+                for (_, cid, part, mirror), h in zip(batch, heights):
+                    y = cursor + h
+                    items[cid] = _place_at(model, cid, x, y, mirror=mirror)
+                    cursor += 2*h + gap
+            else:
+                # Top/bottom pin groups are laid out horizontally.
+                max_half_h = max(p.half_height for p in sizes)
+                offset = center.half_height + 8 + depth*10 + max_half_h
+                y = -offset if side == 'top' else offset
+                gap = 4.0
+                widths = [p.half_width for p in sizes]
+                total = sum(2*w for w in widths) + (len(batch)-1)*gap
+                cursor = -total/2
+                for (_, cid, part, mirror), w in zip(batch, widths):
+                    x = cursor + w
+                    items[cid] = _place_at(model, cid, x, y, mirror=mirror)
+                    cursor += 2*w + gap
+
+    # Sources are traditionally left of the circuitry, outside passive parts.
+    for index, cid in enumerate(sorted(sources)):
+        x = -side_width['left'] - 12 - _place_at(model, cid, 0, 0, side_label=True).half_width
+        y = (index - (len(sources)-1)/2)*14
+        items[cid] = _place_at(model, cid, x, y, side_label=True)
+
+    # Aesthetic candidate must be physically well separated. Otherwise allow
+    # the generic layered placer to handle unusual shapes and pinouts.
+    for i, a in enumerate(items.values()):
+        for b in list(items.values())[i+1:]:
+            if (abs(a.x-b.x) < a.half_width+b.half_width+1 and
+                    abs(a.y-b.y) < a.half_height+b.half_height+1):
+                return None
+    return Placement(items, (tuple(sorted(items)),), (tuple(sorted(items)),))
+
 def place_model(model: CircuitModel) -> Placement:
     """Place every component deterministically; returns pin endpoints for routing."""
     specialized = _bridge_placement(model)
     if specialized is not None:
         return specialized
     specialized = _controller_placement(model)
+    if specialized is not None:
+        return specialized
+    specialized = _ic_neighborhood_placement(model)
     if specialized is not None:
         return specialized
     graph = _component_graph(model)

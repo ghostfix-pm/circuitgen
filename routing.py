@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 import heapq
 import itertools
 import math
@@ -78,6 +79,29 @@ def _segment_clearance(a: Point, b: Point, c: Point, d: Point) -> float:
     dx = max(0, bminx-amaxx, aminx-bmaxx)
     dy = max(0, bminy-amaxy, aminy-bmaxy)
     return math.hypot(dx, dy)
+
+
+def _rects_overlap(a, b) -> bool:
+    """Conservative overlap test for label text, symbols and other labels."""
+    return not (a[2] <= b[0] or b[2] <= a[0] or
+                a[3] <= b[1] or b[3] <= a[1])
+
+
+def _net_label_box(net: str, endpoint: Point, side: str):
+    """Approximate the 12px net-label text in routing-grid coordinates.
+
+    Keep text clear of symbols and other labels; wire-under-text may be
+    visually knocked out by the SVG halo, without breaking electrical wires.
+    """
+    x, y = endpoint
+    width = max(0.38, 0.36 * len(net))
+    if side == 'left':
+        return x - 0.20 - width, y - 0.80, x - 0.20, y + 0.10
+    if side == 'right':
+        return x + 0.20, y - 0.80, x + 0.20 + width, y + 0.10
+    if side == 'top':
+        return x - width/2, y - 0.95, x + width/2, y - 0.24
+    return x - width/2, y + 0.18, x + width/2, y + 0.90
 
 
 def _segments(points):
@@ -167,40 +191,65 @@ class _MeshRouter:
                                        self.terminal_nets.get(f'{cid}.{pin}')))
         self.existing: dict[str, list[Segment]] = defaultdict(list)
         self.labels: list[NetLabel] = []
+        occupied_text = []
+        self.label_boxes: list[tuple[str, tuple[float, float, float, float]]] = []
         for net in sorted(named_nets):
             for ref in sorted(model.nets[net]):
-                cid, pin = ref.split('.', 1)
+                cid, _ = ref.split('.', 1)
                 item, symbol = placement.symbols[cid], model.symbols[cid]
-                x, y = self.pins[ref]
+                start = self.pins[ref]
+                x, y = start
                 l, t, r, b = _bounds(item, symbol)
                 if x < l:
-                    side, end = 'left', (x-1.6, y)
+                    side, dx, dy = 'left', -1, 0
                 elif x > r:
-                    side, end = 'right', (x+1.6, y)
+                    side, dx, dy = 'right', 1, 0
                 elif y < t:
-                    side, end = 'top', (x, y-1.6)
+                    side, dx, dy = 'top', 0, -1
                 elif y > b:
-                    side, end = 'bottom', (x, y+1.6)
+                    side, dx, dy = 'bottom', 0, 1
                 else:
                     raise RoutingError(f'Cannot label pin {ref} inside its component')
-                end = _pt(end)
-                if any(_intersects_rect((x, y), end, rect) for rect in self.rects):
-                    raise RoutingError(f'No room for net label at {ref}')
-                self.existing[net].append(((x, y), end))
+                # Start with a readable stub, then try longer or shorter ones
+                # if another component, text, pin or named net obstructs it.
+                choice = None
+                for length in (1.6, 2.4, 0.95, 3.2, 0.55):
+                    end = _pt((x + dx*length, y + dy*length))
+                    box = _net_label_box(net, end, side)
+                    if any(_intersects_rect(start, end, rect) or
+                           _rects_overlap(box, rect) for rect in self.rects):
+                        continue
+                    if any(_rects_overlap(box, old) for old in occupied_text):
+                        continue
+                    # No named stub may touch an unrelated physical pin/lead.
+                    if any(owner != net and
+                           _segment_clearance(start, end, pos, pos) <= WIRE_CLEARANCE
+                           for pos, owner in self.reserved_pins):
+                        continue
+                    if any(owner != net and
+                           _segment_clearance(start, end, lead, body) <= WIRE_CLEARANCE
+                           for lead, body, owner in self.pin_leads):
+                        continue
+                    if any(other != net and
+                           _segment_clearance(start, end, a, b) <= WIRE_CLEARANCE
+                           for other, lines in self.existing.items() for a, b in lines):
+                        continue
+                    # Prevent another label's stub running through this text.
+                    if any(_intersects_rect(a, b, box)
+                           for other, lines in self.existing.items()
+                           for a, b in lines):
+                        continue
+                    choice = (end, box)
+                    break
+                if choice is None:
+                    raise RoutingError(f'No collision-free net label at {ref} ({net})')
+                end, box = choice
+                self.existing[net].append((start, end))
                 self.labels.append(NetLabel(net, ref, end, end, side))
-        for net, segments in self.existing.items():
-            for a, b in segments:
-                for position, owner in self.reserved_pins:
-                    if owner != net and _segment_clearance(a, b, position, position) <= WIRE_CLEARANCE:
-                        raise RoutingError(f'Net label for {net} touches an unrelated pin')
-                for c, d, owner in self.pin_leads:
-                    if owner != net and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
-                        raise RoutingError(f'Net label for {net} touches an unrelated lead')
-                for other, their_segments in self.existing.items():
-                    if other != net:
-                        for c, d in their_segments:
-                            if _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
-                                raise RoutingError(f'Named nets {net} and {other} overlap')
+                occupied_text.append(box)
+                self.label_boxes.append((net, box))
+        # The checks above are geometric checks, not a license to connect
+        # unrelated nets. Verify every drawn path after routing below.
         self.edge_geometry_clear = lru_cache(maxsize=200000)(self._edge_geometry_clear)
 
     def _p(self, node):
@@ -215,6 +264,11 @@ class _MeshRouter:
         if not self.edge_geometry_clear(*key):
             return False
         a, b = self._p(u), self._p(v)
+        # Text knockout is for readability, not permission to route an
+        # unrelated signal directly behind a named-net label.
+        if any(owner != net and _intersects_rect(a, b, box)
+               for owner, box in self.label_boxes):
+            return False
         for point, owner in self.reserved_pins:
             if owner != net and _segment_clearance(a, b, point, point) <= WIRE_CLEARANCE:
                 return False
@@ -315,10 +369,16 @@ class _MeshRouter:
             for path in paths:
                 for a, b in _segments(path):
                     adjacent[a].add(b); adjacent[b].add(a)
+            # A component lead is another branch at a pin: if two external
+            # wire segments meet at that terminal, render the junction dot.
+            pins_for_net = {self.pin_nodes[ref] for ref in self.model.nets[net]}
             junctions[net] = tuple(sorted(self._p(n) for n, links in adjacent.items()
-                                          if len(links) >= 3))
-        return RoutedCircuit(self.placement, paths_by_net, junctions,
-                             dict(self.terminal_nets), tuple(self.labels))
+                                          if len(links) >= 3 or
+                                          (len(links) >= 2 and n in pins_for_net)))
+        result = RoutedCircuit(self.placement, paths_by_net, junctions,
+                               dict(self.terminal_nets), tuple(self.labels))
+        verify_display_connectivity(self.model, result)
+        return result
 
     def _verify(self, raw_paths, paths_by_net):
         for net, refs in self.model.nets.items():
@@ -345,6 +405,9 @@ class _MeshRouter:
         segments = [(net, a, b) for net, paths in paths_by_net.items()
                     for path in paths for a, b in _segments(path)]
         for i, (net, a, b) in enumerate(segments):
+            if any(owner != net and _intersects_rect(a, b, box)
+                   for owner, box in self.label_boxes):
+                raise RoutingError(f'Wire from {net} obscures a different net label')
             if any(_intersects_rect(a, b, rect) for rect in self.rects):
                 raise RoutingError(f'Wire touches a component body on net {net}')
             for pos, owner in self.reserved_pins:
@@ -358,52 +421,215 @@ class _MeshRouter:
                     raise RoutingError(f'Wires from {net} and {other} intersect')
 
 
+
+def verify_display_connectivity(model: CircuitModel, routed: RoutedCircuit) -> None:
+    """Independent geometric audit of the paths that will actually be drawn.
+
+    Unlike `_MeshRouter._verify`, this checks the *compressed displayed paths*
+    directly. A net's wires must form one connected geometric component, unless
+    every disconnected part has an explicit, matching net label. Unrelated nets
+    cannot touch, cross, or pass through each other's terminals.
+
+    This is a connectivity/geometry audit, not a SPICE behavior simulation.
+    """
+    expected = {ref: net for net, refs in model.nets.items() for ref in refs}
+    if routed.pin_to_net != expected:
+        raise RoutingError('Display pin-to-net mapping differs from original netlist')
+    if set(routed.paths) != set(model.nets):
+        raise RoutingError('Displayed set of nets differs from the original netlist')
+    if set(routed.placement.symbols) != set(model.components):
+        raise RoutingError('Displayed component set differs from the original netlist')
+
+    pin_positions = {f'{cid}.{pin}': _pt(pos)
+                     for cid, part in routed.placement.symbols.items()
+                     for pin, pos in part.pin_positions.items()}
+    labelled = defaultdict(set)
+    for label in routed.labels:
+        if label.net not in model.nets or label.ref not in model.nets[label.net]:
+            raise RoutingError(f'Incorrect displayed net label: {label.net} at {label.ref}')
+        if label.ref in labelled[label.net]:
+            raise RoutingError(f'Duplicate net label at {label.ref}')
+        labelled[label.net].add(label.ref)
+        # The label's stub must be explicitly present in the displayed paths.
+        pin = pin_positions[label.ref]
+        if not any(len(path) >= 2 and _pt(path[0]) == pin and
+                   _pt(path[-1]) == _pt(label.endpoint)
+                   for path in routed.paths[label.net]):
+            raise RoutingError(f'Net label at {label.ref} has no drawn stub')
+
+    all_segments: list[tuple[str, Point, Point]] = []
+    for net, paths in routed.paths.items():
+        for path in paths:
+            if len(path) < 2:
+                raise RoutingError(f'Invalid displayed path on {net}')
+            for a, b in _segments(path):
+                if not all(math.isfinite(v) for v in (*a, *b)):
+                    raise RoutingError(f'Non-finite displayed wire on {net}')
+                if not (abs(a[0]-b[0]) <= 1e-5 or abs(a[1]-b[1]) <= 1e-5):
+                    raise RoutingError(f'Diagonal displayed wire on {net}')
+                if _pt(a) != _pt(b):
+                    all_segments.append((net, a, b))
+    # Recheck disjoint nets independently of the router's occupancy bookkeeping.
+    for i, (name, a, b) in enumerate(all_segments):
+        for other, c, d in all_segments[i+1:]:
+            if name != other and _segment_clearance(a, b, c, d) <= WIRE_CLEARANCE:
+                raise RoutingError(f'Displayed wires from {name} and {other} touch')
+        for ref, pos in pin_positions.items():
+            owner = expected.get(ref)
+            if owner != name and _segment_clearance(a, b, pos, pos) <= WIRE_CLEARANCE:
+                raise RoutingError(f'Displayed wire {name} touches unrelated pin {ref}')
+
+    for net, refs in model.nets.items():
+        segments = [(a, b) for owner, a, b in all_segments if owner == net]
+        if not segments:
+            if len(refs) > 1:
+                raise RoutingError(f'No displayed connections for net {net}')
+            continue
+        # Each displayed segment is a graph vertex. Same-net segments physically
+        # intersecting (including a T-junction on a long compressed line) merge.
+        parents = list(range(len(segments)))
+        def find(i):
+            while parents[i] != i:
+                parents[i] = parents[parents[i]]
+                i = parents[i]
+            return i
+        def union(i, j):
+            parents[find(i)] = find(j)
+        for i, (a, b) in enumerate(segments):
+            for j in range(i+1, len(segments)):
+                c, d = segments[j]
+                if _segment_clearance(a, b, c, d) < 1e-5:
+                    union(i, j)
+        # Every source terminal must touch its declared wire or a net label.
+        groups = defaultdict(set)
+        for ref in refs:
+            point = pin_positions[ref]
+            touching = [i for i, (a, b) in enumerate(segments)
+                        if _segment_clearance(a, b, point, point) < 1e-5]
+            if not touching:
+                raise RoutingError(f'Pin {ref} is not connected in displayed geometry')
+            roots = {find(i) for i in touching}
+            if len(roots) > 1:
+                raise RoutingError(f'Ambiguous unconnected paths at pin {ref}')
+            groups[next(iter(roots))].add(ref)
+        if len(groups) > 1:
+            # Label continuity is a virtual connection between isolated stubs.
+            # A label on only one disconnected group would be misleading.
+            if any(not (group & labelled[net]) for group in groups.values()):
+                raise RoutingError(f'Unlabelled disconnection in displayed net {net}')
+            if set(refs) != labelled[net]:
+                raise RoutingError(f'Incomplete labelled connections for net {net}')
+        elif labelled[net] and labelled[net] != set(refs):
+            raise RoutingError(f'Partial net labels on {net}')
+
+
+
+def _expanded_placement(placement: Placement, scale: float) -> Placement:
+    """Expand center-to-center spacing while preserving individual symbol size.
+
+    Merely enlarging the SVG viewBox cannot create routing channels. This
+    modifies actual placements and pin endpoints without moving pins relative
+    to their components or changing the circuit.
+    """
+    ox = min(item.x for item in placement.symbols.values())
+    oy = min(item.y for item in placement.symbols.values())
+    moved = {}
+    for cid, item in placement.symbols.items():
+        nx = round(ox + (item.x - ox)*scale, 6)
+        ny = round(oy + (item.y - oy)*scale, 6)
+        dx, dy = nx-item.x, ny-item.y
+        moved[cid] = dataclasses.replace(
+            item, x=nx, y=ny,
+            pin_positions={pin: _pt((x+dx, y+dy))
+                           for pin, (x, y) in item.pin_positions.items()}
+        )
+    return dataclasses.replace(placement, symbols=moved)
+
+
 def _route_model_base(model: CircuitModel, placement: Placement | None = None) -> RoutedCircuit:
-    """Route every net, or raise rather than drawing a misleading partial circuit."""
+    """Route locally before long power rails; label only genuinely difficult nets.
+
+    Every successful result undergoes an independent check of its *drawn*
+    geometry, not merely the validated input netlist. The fallback is explicit
+    and bounded, with no changes to electrical connectivity or wire collisions.
+    """
     if placement is None:
         placement = place_model(model)
-    primary = sorted(model.nets, key=lambda n: (-len(model.nets[n]), n))
-    # Dense multi-pin controllers benefit from named power/data rails upfront.
-    # Avoid several expensive impossible full-wire attempts.
-    controller = any(len(symbol.pins) >= 16 for symbol in model.symbols.values())
-    preferred = frozenset(n for n in model.nets if n.upper() in
-                          {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'SDA', 'SCL', 'VIN'})
-    if controller and preferred:
-        # Keep signal nets physically drawn when possible; use labels only
-        # for conventional power rails. Broaden labels if routing fails.
-        power = frozenset(n for n in preferred if n.upper() in
-                          {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN'})
-        for named in (power, preferred):
-            if not named:
-                continue
-            for margin in (ROUTING_MARGIN, ROUTING_MARGIN+9):
+    pins = {ref: _pt(placement.symbols[ref.split('.', 1)[0]].pin_positions[
+                     ref.split('.', 1)[1]])
+            for refs in model.nets.values() for ref in refs}
+
+    def wire_span(net):
+        locations = [pins[ref] for ref in model.nets[net]]
+        if len(locations) < 2:
+            return 0.0
+        return (max(x for x, y in locations) - min(x for x, y in locations) +
+                max(y for x, y in locations) - min(y for x, y in locations))
+
+    # Local two-pin signal connections should be committed before wide buses.
+    local_first = sorted(model.nets, key=lambda n: (wire_span(n), len(model.nets[n]), n))
+    wide_first = sorted(model.nets, key=lambda n: (-len(model.nets[n]), n))
+    power_names = {'GND', 'VCC', 'VDD', 'VSS', '3V3', '5V', 'VIN', 'VBAT', 'AGND', 'DGND'}
+    power = frozenset(n for n in model.nets if n.upper() in power_names)
+    errors = []
+
+    def try_route(order, named):
+        return _MeshRouter(model, placement, ROUTING_MARGIN, frozenset(named)).route(order)
+
+    # Trying the short connections first drastically improves IC layouts; the
+    # second order still handles unusual high-fanout and parallel geometries.
+    for order in (local_first, wide_first):
+        try:
+            return try_route(order, ())
+        except RoutingError as error:
+            errors.append('all-wire: ' + str(error))
+
+    # Power labels are conventional, unlike using labels on every signal path.
+    # We try more than one order, but stop once a fully signal-wired plan works.
+    starts = (power, frozenset()) if power else (frozenset(),)
+    for start in starts:
+        named = set(start)
+        for _ in range(len(model.nets) + 1):
+            failure = None
+            for order in (local_first, wide_first):
                 try:
-                    return _MeshRouter(model, placement, margin, named).route(primary)
-                except RoutingError:
-                    pass
-    attempts = (primary, sorted(model.nets), list(reversed(primary)))
-    last_error = None
-    for order in attempts:
-        for margin in (ROUTING_MARGIN, ROUTING_MARGIN+9):
-            try:
-                return _MeshRouter(model, placement, margin).route(order)
-            except RoutingError as error:
-                last_error = error
-    # Named nets avoid misleading crossings in dense pin arrays.
-    if preferred:
-        for margin in (ROUTING_MARGIN, ROUTING_MARGIN+9):
-            try:
-                router = _MeshRouter(model, placement, margin, preferred)
-                return router.route(primary)
-            except RoutingError as error:
-                last_error = error
-    raise RoutingError(f'General routing failed without crossing unrelated nets: {last_error}')
+                    return try_route(order, named)
+                except RoutingError as error:
+                    errors.append(f'named={sorted(named)}: {error}')
+                    if failure is None:
+                        failure = error
+            # Name the genuinely unreachable signal, then retry remaining local
+            # wires. If labels themselves collide, try a different layout.
+            match = re.fullmatch(
+                r'(?:No collision-free path for net|Routing search limit exceeded on net) (.+)',
+                str(failure)
+            ) if failure else None
+            if not match or match.group(1) not in model.nets or match.group(1) in named:
+                break
+            named.add(match.group(1))
+
+    raise RoutingError('Unable to construct an electrically verified schematic. ' +
+                       ' | '.join(errors[-4:]))
 
 
 def route_model(model: CircuitModel, placement: Placement | None = None,
                 *, optimize: bool = False) -> RoutedCircuit:
     """Route a netlist. Optional improvement never accepts an unverified layout."""
-    result = _route_model_base(model, placement)
+    if placement is not None:
+        # Callers supplying placement explicitly control the geometry.
+        result = _route_model_base(model, placement)
+    else:
+        original = place_model(model)
+        last_error = None
+        for candidate in (original, _expanded_placement(original, 1.25),
+                          _expanded_placement(original, 1.5)):
+            try:
+                result = _route_model_base(model, candidate)
+                break
+            except RoutingError as error:
+                last_error = error
+        else:
+            raise RoutingError(f'Routing failed after spacing expansion: {last_error}')
     if optimize:
         from optimization import choose_better_layout
         return choose_better_layout(model, result, _route_model_base)
@@ -452,6 +678,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
            '.wire{fill:none;stroke:#264a6f;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}',
            '.junction{fill:#264a6f}',
            '.netlabel{fill:#176b75;font-family:Arial,sans-serif;font-size:12px;font-weight:700}',
+           '.netlabel-halo{fill:none;stroke:#ffffff;stroke-width:4px;stroke-linejoin:round;font-family:Arial,sans-serif;font-size:12px;font-weight:700}',
            ']]></style>']
     for net in sorted(result.paths):
         for path in result.paths[net]:
@@ -474,7 +701,10 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
             y -= 8; anchor = 'middle'
         else:
             y += 18; anchor = 'middle'
-        out.append(f'<text class="netlabel" data-net="{xml(label.net)}" data-pin="{xml(label.ref)}" text-anchor="{anchor}" x="{x:.2f}" y="{y:.2f}">{xml(label.net)}</text>')
+        markup = (f'data-net="{xml(label.net)}" data-pin="{xml(label.ref)}" '
+                  f'text-anchor="{anchor}" x="{x:.2f}" y="{y:.2f}"')
+        out.append(f'<text class="netlabel-halo" {markup}>{xml(label.net)}</text>')
+        out.append(f'<text class="netlabel" {markup}>{xml(label.net)}</text>')
     for cid in sorted(placed.symbols):
         item = placed.symbols[cid]
         comp = model.components[cid]
