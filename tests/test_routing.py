@@ -90,7 +90,7 @@ class TestRouting(unittest.TestCase):
 
     def test_auto_api_falls_back_only_when_needed(self):
         bridge_svg = make_svg_from_netlist(self.bridge)
-        self.assertIn('SchemAI routed schematic', bridge_svg)
+        self.assertIn('CircuitGen routed schematic', bridge_svg)
         self.assertEqual(bridge_svg.count('data-component="'), 6)
         small = {'components': [
             {'id':'V1', 'type':'battery', 'value':'9V'},
@@ -98,7 +98,7 @@ class TestRouting(unittest.TestCase):
             'nets': [
                 {'name':'A', 'pins':['V1.p','R1.a']},
                 {'name':'B', 'pins':['R1.b','V1.n']}]}
-        self.assertNotIn('SchemAI routed schematic', make_svg_from_netlist(small))
+        self.assertNotIn('CircuitGen routed schematic', make_svg_from_netlist(small))
 
     def test_svg_contains_real_wires_not_dashed_guides(self):
         svg = make_routed_svg_from_netlist(self.bridge)

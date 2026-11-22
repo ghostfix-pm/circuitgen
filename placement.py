@@ -1052,7 +1052,7 @@ def make_placement_preview_svg(model: CircuitModel) -> str:
 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.1f} {height:.1f}" width="{width:.1f}" height="{height:.1f}">',
-        '<title>SchemAI placement preview — NOT a wired schematic</title>',
+        '<title>CircuitGen placement preview — NOT a wired schematic</title>',
         '<desc>Dashed lines indicate shared nets, not verified electrical wires. Routing is not implemented here.</desc>',
         '<style><![CDATA[',
         '.symbol{fill:none;stroke:#213149;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}',

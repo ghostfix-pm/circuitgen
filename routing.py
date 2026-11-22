@@ -895,7 +895,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
     def xml(value):
         return xml_escape(value, {'"': '&quot;', "'": '&apos;'})
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {x1-x0:.1f} {y1-y0:.1f}" width="{x1-x0:.1f}" height="{y1-y0:.1f}">',
-           '<title>SchemAI routed schematic</title>',
+           '<title>CircuitGen routed schematic</title>',
            '<style><![CDATA[',
            '.symbol{fill:none;stroke:#213149;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}',
            '.mark{fill:#213149;font-family:Arial,sans-serif;font-size:16px;text-anchor:middle}',
@@ -931,7 +931,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
                   f'text-anchor="{anchor}" x="{x:.2f}" y="{y:.2f}"')
         label_drawings.append((markup, xml(label.net)))
     if label_drawings:
-        out.append('<defs><mask id="schemai-label-cutout" maskUnits="userSpaceOnUse" '
+        out.append('<defs><mask id="circuitgen-label-cutout" maskUnits="userSpaceOnUse" '
                    f'x="0" y="0" width="{x1-x0:.1f}" height="{y1-y0:.1f}">')
         out.append(f'<rect x="0" y="0" width="{x1-x0:.1f}" height="{y1-y0:.1f}" fill="white"/>')
         for markup, value in label_drawings:
@@ -939,7 +939,7 @@ def make_routed_svg(model: CircuitModel, *, optimize: bool = False, color: str =
                        f'stroke-width="5" stroke-linejoin="round" '
                        f'style="fill:black;stroke:black">{value}</text>')
         out.append('</mask></defs>')
-        out.append('<g mask="url(#schemai-label-cutout)">')
+        out.append('<g mask="url(#circuitgen-label-cutout)">')
     crossover_map = _crossover_map(result)
     hop_geometry = _crossover_hop_geometry(result, crossover_map)
     for net in sorted(result.paths):

@@ -53,7 +53,7 @@ SCHEMA: dict[str, Any] = {
     "additionalProperties": False,
 }
 
-PROMPT = """You are an electrical netlist translator for SchemAI.
+PROMPT = """You are an electrical netlist translator for CircuitGen.
 Convert the user's educational circuit description into a complete JSON
 netlist. Output only the JSON object; no diagrams, Python, SVG, or commentary.
 
@@ -89,7 +89,7 @@ CUSTOM COMPONENT RULES (CRITICAL):
 5. For a *specific* unfamiliar IC/module whose pinout was not supplied,
    do not invent a real-world physical pinout. Use only the logical pins
    clearly specified by the user. Do not claim physical pin numbers.
-6. Registered components normally omit "pins" because SchemAI already
+6. Registered components normally omit "pins" because CircuitGen already
    knows them. If supplied, the list must match the registered pins exactly.
 
 GENERAL NETLIST RULES:

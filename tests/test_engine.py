@@ -130,7 +130,7 @@ class TestEngine(unittest.TestCase):
             [["V1.p", "V2.p"], ["V1.n", "V2.n"]],
         )
         artwork = make_svg_from_netlist(raw)
-        self.assertIn('SchemAI routed schematic', artwork)
+        self.assertIn('CircuitGen routed schematic', artwork)
         self.assertEqual(artwork.count('data-component="'), 2)
 
     def test_duplicate_terminal(self):
@@ -150,7 +150,7 @@ class TestEngine(unittest.TestCase):
              ["R3.b", "R4.a", "R5.b"], ["R2.b", "R4.b", "V1.n"]],
         )
         artwork = make_svg_from_netlist(raw)
-        self.assertIn('SchemAI routed schematic', artwork)
+        self.assertIn('CircuitGen routed schematic', artwork)
         self.assertEqual(artwork.count('data-component="'), 6)
 
     def test_dangling_terminal_is_visible_as_unconnected(self):
@@ -158,7 +158,7 @@ class TestEngine(unittest.TestCase):
             [("V1", "battery", "9V"), ("R1", "resistor", "1kΩ")],
             [["V1.p", "R1.a"], ["V1.n"]],
         )
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
 
 if __name__ == "__main__":
@@ -171,7 +171,7 @@ class TestGeneralModel(unittest.TestCase):
                       [['V1.p','R1.a'],['V1.n','V2.n'],['V2.p','R1.b']])
         model = validate_model(raw)
         self.assertEqual(len(model.components), 3)
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_custom_multipin_component(self):
         from engine import validate_model
@@ -182,7 +182,7 @@ class TestGeneralModel(unittest.TestCase):
                        {'name':'SIGNAL','pins':['U1.OUT']}]}
         model = validate_model(raw)
         self.assertEqual(model.components['U1'].pins['OUT'], 'SIGNAL')
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_unknown_pin_rejected(self):
         from engine import validate_model

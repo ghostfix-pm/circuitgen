@@ -1,4 +1,4 @@
-"""Conservative electrical rule checks for structurally valid SchemAI netlists.
+"""Conservative electrical rule checks for structurally valid CircuitGen netlists.
 
 This module does not simulate circuits, verify custom pinouts, or guarantee safety.
 """
@@ -270,12 +270,12 @@ def model_builtin_kinds() -> frozenset[str]:
 
 
 def check_electrical_rules(raw: dict[str, Any]) -> ERCReport:
-    """Validate a SchemAI netlist and return conservative electrical diagnostics."""
+    """Validate a CircuitGen netlist and return conservative electrical diagnostics."""
     return check_model(validate_model(raw))
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check a SchemAI netlist for electrical rule issues")
+    parser = argparse.ArgumentParser(description="Check a CircuitGen netlist for electrical rule issues")
     parser.add_argument("netlist", type=Path)
     parser.add_argument("--json", action="store_true", help="Print a structured JSON report")
     parser.add_argument("--fail-on-warning", action="store_true",

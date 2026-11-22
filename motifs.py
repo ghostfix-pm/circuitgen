@@ -140,7 +140,7 @@ class _Drawing:
     def __init__(self, width: int, height: int, motif: str):
         self.parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" width="{width}" height="{height}" data-motif="{motif}">',
-            '<title>SchemAI routed schematic</title>',
+            '<title>CircuitGen routed schematic</title>',
             '<style><![CDATA[',
             '.symbol{fill:none;stroke:#213149;stroke-width:2.6;stroke-linecap:round;stroke-linejoin:round}',
             '.mark{fill:#213149;font-family:Arial,sans-serif;font-size:16px;text-anchor:middle}',

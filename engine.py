@@ -562,7 +562,7 @@ def svg(circuit: Circuit, ink: Ink) -> str:
 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width:.0f} {height:.0f}" width="{width:.0f}" height="{height:.0f}">',
-        '<title>SchemAI schematic</title>',
+        '<title>CircuitGen schematic</title>',
         '<desc>Automatically generated and geometrically validated two-terminal electrical schematic. Review before physical use.</desc>',
         '<style><![CDATA[',
         '.wire{stroke:#27354d;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}',

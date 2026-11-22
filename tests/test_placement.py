@@ -30,7 +30,7 @@ class TestPlacement(unittest.TestCase):
         self.assertEqual(result.symbols["R5"].rotation, 0)
         for cid in ("R1", "R2", "R3", "R4"):
             self.assertEqual(result.symbols[cid].rotation, 90)
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_bridge_motif_does_not_depend_on_net_names(self):
         raw = example('wheatstone.json')
@@ -53,7 +53,7 @@ class TestPlacement(unittest.TestCase):
             self.assertEqual((result.symbols[cid].x, result.symbols[cid].y),
                              (baseline.symbols[cid].x, baseline.symbols[cid].y))
             self.assertEqual(set(result.symbols[cid].pin_positions), {'a', 'b'})
-            self.assertIn('SchemAI routed schematic', make_svg_from_netlist(changed))
+            self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(changed))
 
     def test_controller_led_follows_selected_digital_pin(self):
         raw = example('controller.json')
@@ -62,7 +62,7 @@ class TestPlacement(unittest.TestCase):
         placement = place_netlist(raw)
         self.assertEqual(placement.symbols['R1'].y,
                          placement.symbols['U1'].pin_positions['D8'][1])
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_wheatstone_preview_is_parseable(self):
         raw = example("wheatstone.json")

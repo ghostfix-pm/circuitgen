@@ -87,7 +87,7 @@ class TestSymbolLibrary(unittest.TestCase):
         model = validate_model(raw)
         self.assertEqual(model.symbols["U1"].pin_names, get_symbol("ne555").pin_names)
         self.assertEqual(pin_positions(model.symbols["U1"])["GND"], (0, 3.35))
-        self.assertIn('SchemAI routed schematic', make_svg_from_netlist(raw))
+        self.assertIn('CircuitGen routed schematic', make_svg_from_netlist(raw))
 
     def test_model_rejects_misdeclared_known_pinout(self):
         raw = {"components": [{"id": "U1", "type": "ne555", "value": "NE555",
