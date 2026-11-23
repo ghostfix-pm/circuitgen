@@ -19,7 +19,6 @@ from typing import Any, Sequence
 from circuitgen import __version__
 from circuitgen.colors import normalize_color
 from circuitgen.engine import CircuitError
-from circuitgen.routing import RoutingError
 
 EXIT_OK = 0
 EXIT_REJECTED = 1
@@ -101,7 +100,7 @@ def _render(arguments: argparse.Namespace) -> int:
     netlist = _load_netlist(arguments.netlist)
     try:
         result = from_netlist(netlist, optimize=arguments.optimize, color=arguments.color)
-    except (CircuitError, RoutingError) as error:
+    except (CircuitError, ValueError) as error:  # ValueError covers RoutingError
         raise CommandError(str(error)) from error
     target = _write_result(result.svg, arguments.output)
     if not arguments.quiet:
