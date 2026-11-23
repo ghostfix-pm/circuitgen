@@ -6,6 +6,16 @@ CircuitGen takes a circuit netlist, places components, routes wires, and exports
 
 ## Installation
 
+### Recommended: Using pipx (CLI application)
+If you want to use the `circuitgen` interactive CLI tool directly in your terminal, we recommend installing via [pipx](https://pypa.github.io/pipx/), which isolates dependencies and automatically ensures scripts are on your system `PATH`:
+
+```bash
+pipx install circuitgen
+```
+
+### Standard: Using pip
+To install CircuitGen as a library or CLI in your Python environment:
+
 ```bash
 pip install circuitgen
 ```
@@ -18,7 +28,54 @@ cd circuitgen
 pip install -e .
 ```
 
-Requires Python 3.10 or higher. No external runtime dependencies.
+Requires Python 3.10 or higher.
+
+## Running CircuitGen
+
+You can launch the interactive terminal interface using either:
+
+```bash
+circuitgen
+```
+
+Or using the universal cross-platform Python module entrypoint:
+
+```bash
+python -m circuitgen
+```
+
+Both entrypoints run the exact same CLI. If your terminal cannot find the `circuitgen` command, `python -m circuitgen` always works without requiring PATH changes.
+
+### PATH Troubleshooting
+
+If you installed via `pip install circuitgen` (or `--user`) and typing `circuitgen` produces `"command not found"` or `'circuitgen' is not recognized`:
+
+* **Windows:**
+  * Python's user scripts directory is usually located at:
+    * Python Launcher / Store: `%LOCALAPPDATA%\Python\pythoncore-...\Scripts`
+    * Standard CPython: `%APPDATA%\Python\Python3X\Scripts`
+    * You can check your exact scripts directory by running:
+      ```powershell
+      python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+      ```
+  * In **Git Bash** or **PowerShell**, add this directory to your user `PATH` environment variable in Windows Settings, or run `python -m circuitgen`.
+  * Alternatively, run `pipx ensurepath` if using `pipx`.
+
+* **macOS:**
+  * Pip user binaries are usually in `~/Library/Python/3.X/bin` (or `/opt/homebrew/bin`).
+  * Add it to your shell configuration (`~/.zshrc` or `~/.bash_profile`):
+    ```bash
+    export PATH="$HOME/Library/Python/$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/bin:$PATH"
+    ```
+  * Or use `python3 -m circuitgen`.
+
+* **Linux:**
+  * Pip user binaries are usually in `~/.local/bin`.
+  * Add it to your shell configuration (`~/.bashrc` or `~/.zshrc`):
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    ```
+  * Or use `python3 -m circuitgen`.
 
 ## Quickstart
 
